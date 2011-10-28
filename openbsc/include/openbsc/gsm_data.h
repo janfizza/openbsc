@@ -292,6 +292,7 @@ struct gsm_network {
 
 #define SMS_HDR_SIZE	128
 #define SMS_TEXT_SIZE	256
+
 struct gsm_sms {
 	unsigned long long id;
 	struct gsm_subscriber *sender;
