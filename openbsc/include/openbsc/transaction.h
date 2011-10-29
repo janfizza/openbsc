@@ -49,8 +49,6 @@ struct gsm_trans {
 		} cc;
 		struct {
 			uint8_t link_id;	/* RSL Link ID to be used for this trans */
-			enum gsm411_rp_state rp_state;
-
 			struct gsm411_smc_inst smc_inst;
 			struct gsm411_smr_inst smr_inst;
 

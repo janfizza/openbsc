@@ -49,6 +49,7 @@
 #include <openbsc/bsc_rll.h>
 #include <openbsc/chan_alloc.h>
 #include <openbsc/bsc_api.h>
+#include <osmocom/gsm/gsm0411_utils.h>
 
 void *tall_gsms_ctx;
 static uint32_t new_callref = 0x40000001;
@@ -70,7 +71,8 @@ void sms_free(struct gsm_sms *sms)
 	talloc_free(sms);
 }
 
-struct gsm_sms *sms_from_text(struct gsm_subscriber *receiver, int dcs, const char *text)
+struct gsm_sms *sms_from_text(struct gsm_subscriber *receiver, int dcs,
+				const char *text)
 {
 	struct gsm_sms *sms = sms_alloc();
 
@@ -120,27 +122,12 @@ static void gsm411_release_conn(struct gsm_subscriber_connection *conn)
 	subscr_put_channel(conn->subscr);
 }
 
-static int gsm411_sendmsg(struct gsm_subscriber_connection *conn, struct msgb *msg, uint8_t link_id)
+static int gsm411_sendmsg(struct gsm_subscriber_connection *conn,
+				struct msgb *msg, uint8_t link_id)
 {
 	DEBUGP(DLSMS, "GSM4.11 TX %s\n", osmo_hexdump(msg->data, msg->len));
 	msg->l3h = msg->data;
 	return gsm0808_submit_dtap(conn, msg, link_id, 1);
-}
-
-/* Prefix msg with a 04.08/04.11 CP header */
-static int gsm411_cp_sendmsg(struct msgb *msg, struct gsm_trans *trans,
-			     uint8_t msg_type)
-{
-	struct gsm48_hdr *gh;
-
-	gh = (struct gsm48_hdr *) msgb_push(msg, sizeof(*gh));
-	/* Outgoing needs the highest bit set */
-	gh->proto_discr = trans->protocol | (trans->transaction_id<<4);
-	gh->msg_type = msg_type;
-
-	DEBUGP(DLSMS, "sending CP message (trans=%x)\n", trans->transaction_id);
-
-	return gsm411_sendmsg(trans->conn, msg, trans->sms.link_id);
 }
 
 /* mm_send: receive MMCCSMS sap message from SMC */
@@ -158,7 +145,11 @@ int gsm411_mm_send(struct gsm411_smc_inst *inst, int msg_type,
 		msgb_free(msg); /* upper layer does not free msg */
 		break;
 	case GSM411_MMSMS_DATA_REQ:
-		rc = gsm411_cp_sendmsg(msg, trans, cp_msg_type);
+		gsm411_push_cp_header(msg, trans->protocol,
+			trans->transaction_id, cp_msg_type);
+		DEBUGP(DLSMS, "sending CP message (trans=%x)\n",
+			trans->transaction_id);
+		rc = gsm411_sendmsg(trans->conn, msg, trans->sms.link_id);
 		break;
 	case GSM411_MMSMS_REL_REQ:
 		DEBUGP(DLSMS, "Got MMSMS_REL_REQ, destroying transaction.\n");
@@ -184,214 +175,6 @@ int gsm411_mn_send(struct gsm411_smr_inst *inst, int msg_type,
 	return gsm411_smc_send(&trans->sms.smc_inst, msg_type, msg);
 }
 
-/* Turn int into semi-octet representation: 98 => 0x89 */
-static uint8_t bcdify(uint8_t value)
-{
-	uint8_t ret;
-
-	ret = value / 10;
-	ret |= (value % 10) << 4;
-
-	return ret;
-}
-
-/* Turn semi-octet representation into int: 0x89 => 98 */
-static uint8_t unbcdify(uint8_t value)
-{
-	uint8_t ret;
-
-	if ((value & 0x0F) > 9 || (value >> 4) > 9)
-		LOGP(DLSMS, LOGL_ERROR,
-		     "unbcdify got too big nibble: 0x%02X\n", value);
-
-	ret = (value&0x0F)*10;
-	ret += value>>4;
-
-	return ret;
-}
-
-/* Generate 03.40 TP-SCTS */
-static void gsm340_gen_scts(uint8_t *scts, time_t time)
-{
-	struct tm *tm = localtime(&time);
-
-	*scts++ = bcdify(tm->tm_year % 100);
-	*scts++ = bcdify(tm->tm_mon + 1);
-	*scts++ = bcdify(tm->tm_mday);
-	*scts++ = bcdify(tm->tm_hour);
-	*scts++ = bcdify(tm->tm_min);
-	*scts++ = bcdify(tm->tm_sec);
-	*scts++ = bcdify(tm->tm_gmtoff/(60*15));
-}
-
-/* Decode 03.40 TP-SCTS (into utc/gmt timestamp) */
-static time_t gsm340_scts(uint8_t *scts)
-{
-	struct tm tm;
-
-	uint8_t yr = unbcdify(*scts++);
-
-	if (yr <= 80)
-		tm.tm_year = 100 + yr;
-	else
-		tm.tm_year = yr;
-	tm.tm_mon  = unbcdify(*scts++) - 1;
-	tm.tm_mday = unbcdify(*scts++);
-	tm.tm_hour = unbcdify(*scts++);
-	tm.tm_min  = unbcdify(*scts++);
-	tm.tm_sec  = unbcdify(*scts++);
-	/* according to gsm 03.40 time zone is
-	   "expressed in quarters of an hour" */
-	tm.tm_gmtoff = unbcdify(*scts++) * 15*60;
-
-	return mktime(&tm);
-}
-
-/* Return the default validity period in minutes */
-static unsigned long gsm340_vp_default(void)
-{
-	unsigned long minutes;
-	/* Default validity: two days */
-	minutes = 24 * 60 * 2;
-	return minutes;
-}
-
-/* Decode validity period format 'relative' */
-static unsigned long gsm340_vp_relative(uint8_t *sms_vp)
-{
-	/* Chapter 9.2.3.12.1 */
-	uint8_t vp;
-	unsigned long minutes;
-
-	vp = *(sms_vp);
-	if (vp <= 143)
-		minutes = vp + 1 * 5;
-	else if (vp <= 167)
-		minutes = 12*60 + (vp-143) * 30;
-	else if (vp <= 196)
-		minutes = vp-166 * 60 * 24;
-	else
-		minutes = vp-192 * 60 * 24 * 7;
-	return minutes;
-}
-
-/* Decode validity period format 'absolute' */
-static unsigned long gsm340_vp_absolute(uint8_t *sms_vp)
-{
-	/* Chapter 9.2.3.12.2 */
-	time_t expires, now;
-	unsigned long minutes;
-
-	expires = gsm340_scts(sms_vp);
-	now = time(NULL);
-	if (expires <= now)
-		minutes = 0;
-	else
-		minutes = (expires-now)/60;
-	return minutes;
-}
-
-/* Decode validity period format 'relative in integer representation' */
-static unsigned long gsm340_vp_relative_integer(uint8_t *sms_vp)
-{
-	uint8_t vp;
-	unsigned long minutes;
-	vp = *(sms_vp);
-	if (vp == 0) {
-		LOGP(DLSMS, LOGL_ERROR,
-		     "reserved relative_integer validity period\n");
-		return gsm340_vp_default();
-	}
-	minutes = vp/60;
-	return minutes;
-}
-
-/* Decode validity period format 'relative in semi-octet representation' */
-static unsigned long gsm340_vp_relative_semioctet(uint8_t *sms_vp)
-{
-	unsigned long minutes;
-	minutes = unbcdify(*sms_vp++)*60;  /* hours */
-	minutes += unbcdify(*sms_vp++);    /* minutes */
-	minutes += unbcdify(*sms_vp++)/60; /* seconds */
-	return minutes;
-}
-
-/* decode validity period. return minutes */
-static unsigned long gsm340_validity_period(uint8_t sms_vpf, uint8_t *sms_vp)
-{
-	uint8_t fi; /* functionality indicator */
-
-	switch (sms_vpf) {
-	case GSM340_TP_VPF_RELATIVE:
-		return gsm340_vp_relative(sms_vp);
-	case GSM340_TP_VPF_ABSOLUTE:
-		return gsm340_vp_absolute(sms_vp);
-	case GSM340_TP_VPF_ENHANCED:
-		/* Chapter 9.2.3.12.3 */
-		fi = *sms_vp++;
-		/* ignore additional fi */
-		if (fi & (1<<7)) sms_vp++;
-		/* read validity period format */
-		switch (fi & 0x7) {
-		case 0x0:
-			return gsm340_vp_default(); /* no vpf specified */
-		case 0x1:
-			return gsm340_vp_relative(sms_vp);
-		case 0x2:
-			return gsm340_vp_relative_integer(sms_vp);
-		case 0x3:
-			return gsm340_vp_relative_semioctet(sms_vp);
-		default:
-			/* The GSM spec says that the SC should reject any
-			   unsupported and/or undefined values. FIXME */
-			LOGP(DLSMS, LOGL_ERROR,
-			     "Reserved enhanced validity period format\n");
-			return gsm340_vp_default();
-		}
-	case GSM340_TP_VPF_NONE:
-	default:
-		return gsm340_vp_default();
-	}
-}
-
-/* determine coding alphabet dependent on GSM 03.38 Section 4 DCS */
-enum sms_alphabet gsm338_get_sms_alphabet(uint8_t dcs)
-{
-	uint8_t cgbits = dcs >> 4;
-	enum sms_alphabet alpha = DCS_NONE;
-
-	if ((cgbits & 0xc) == 0) {
-		if (cgbits & 2) {
-			LOGP(DLSMS, LOGL_NOTICE,
-			     "Compressed SMS not supported yet\n");
-			return 0xffffffff;
-		}
-
-		switch ((dcs >> 2)&0x03) {
-		case 0:
-			alpha = DCS_7BIT_DEFAULT;
-			break;
-		case 1:
-			alpha = DCS_8BIT_DATA;
-			break;
-		case 2:
-			alpha = DCS_UCS2;
-			break;
-		}
-	} else if (cgbits == 0xc || cgbits == 0xd)
-		alpha = DCS_7BIT_DEFAULT;
-	else if (cgbits == 0xe)
-		alpha = DCS_UCS2;
-	else if (cgbits == 0xf) {
-		if (dcs & 4)
-			alpha = DCS_8BIT_DATA;
-		else
-			alpha = DCS_7BIT_DEFAULT;
-	}
-
-	return alpha;
-}
-
 static int gsm340_rx_sms_submit(struct msgb *msg, struct gsm_sms *gsms)
 {
 	if (db_sms_store(gsms) != 0) {
@@ -402,23 +185,6 @@ static int gsm340_rx_sms_submit(struct msgb *msg, struct gsm_sms *gsms)
 	send_signal(S_SMS_SUBMITTED, NULL, gsms, 0);
 
 	return 0;
-}
-
-/* generate a TPDU address field compliant with 03.40 sec. 9.1.2.5 */
-static int gsm340_gen_oa(uint8_t *oa, unsigned int oa_len,
-			 struct gsm_subscriber *subscr)
-{
-	int len_in_bytes;
-
-	oa[1] = 0xb9; /* networks-specific number, private numbering plan */
-
-	len_in_bytes =
-		gsm48_encode_bcd_number(oa, oa_len, 1, subscr->extension);
-
-	/* GSM 03.40 tells us the length is in 'useful semi-octets' */
-	oa[0] = strlen(subscr->extension) & 0xff;
-
-	return len_in_bytes;
 }
 
 /* generate a msgb containing a TPDU derived from struct gsm_sms,
@@ -446,7 +212,8 @@ static int gsm340_gen_tpdu(struct msgb *msg, struct gsm_sms *sms)
 		*smsp |= 0x40;
 	
 	/* generate originator address */
-	oa_len = gsm340_gen_oa(oa, sizeof(oa), sms->sender);
+	oa_len = gsm340_gen_oa(oa, sizeof(oa), 0x3, 0x9,
+					sms->sender->extension);
 	smsp = msgb_put(msg, oa_len);
 	memcpy(smsp, oa, oa_len);
 
@@ -483,8 +250,8 @@ static int gsm340_gen_tpdu(struct msgb *msg, struct gsm_sms *sms)
 		memcpy(smsp, sms->user_data, sms->user_data_len);
 		break;
 	default:
-		LOGP(DLSMS, LOGL_NOTICE, "Unhandled Data Coding Scheme: 0x%02X\n",
-		     sms->data_coding_scheme);
+		LOGP(DLSMS, LOGL_NOTICE, "Unhandled Data Coding Scheme: "
+			"0x%02X\n", sms->data_coding_scheme);
 		break;
 	}
 
@@ -493,7 +260,8 @@ static int gsm340_gen_tpdu(struct msgb *msg, struct gsm_sms *sms)
 
 /* process an incoming TPDU (called from RP-DATA)
  * return value > 0: RP CAUSE for ERROR; < 0: silent error; 0 = success */
-static int gsm340_rx_tpdu(struct gsm_subscriber_connection *conn, struct msgb *msg)
+static int gsm340_rx_tpdu(struct gsm_subscriber_connection *conn,
+	struct msgb *msg)
 {
 	uint8_t *smsp = msgb_sms(msg);
 	struct gsm_sms *gsms;
@@ -517,8 +285,8 @@ static int gsm340_rx_tpdu(struct gsm_subscriber_connection *conn, struct msgb *m
 	gsms->status_rep_req = (*smsp & 0x20);
 	gsms->ud_hdr_ind = (*smsp & 0x40);
 	sms_rp  = (*smsp & 0x80);
-
 	smsp++;
+
 	gsms->msg_ref = *smsp++;
 
 	/* length in bytes of the destination address */
@@ -533,7 +301,8 @@ static int gsm340_rx_tpdu(struct gsm_subscriber_connection *conn, struct msgb *m
 	/* mangle first byte to reflect length in bytes, not digits */
 	address_lv[0] = da_len_bytes - 1;
 	/* convert to real number */
-	gsm48_decode_bcd_number(gsms->dest_addr, sizeof(gsms->dest_addr), address_lv, 1);
+	gsm48_decode_bcd_number(gsms->dest_addr, sizeof(gsms->dest_addr),
+		address_lv, 1);
 	smsp += da_len_bytes;
 
 	gsms->protocol_id = *smsp++;
@@ -589,7 +358,8 @@ static int gsm340_rx_tpdu(struct gsm_subscriber_connection *conn, struct msgb *m
 	     gsms->protocol_id, gsms->data_coding_scheme, gsms->dest_addr,
 	     gsms->user_data_len,
 			sms_alphabet == DCS_7BIT_DEFAULT ? gsms->text :
-				osmo_hexdump(gsms->user_data, gsms->user_data_len));
+				osmo_hexdump(gsms->user_data,
+						gsms->user_data_len));
 
 	gsms->validity_minutes = gsm340_validity_period(sms_vpf, sms_vp);
 
@@ -597,7 +367,8 @@ static int gsm340_rx_tpdu(struct gsm_subscriber_connection *conn, struct msgb *m
 	send_signal(0, NULL, gsms, 0);
 
 	/* determine gsms->receiver based on dialled number */
-	gsms->receiver = subscr_get_by_extension(conn->bts->network, gsms->dest_addr);
+	gsms->receiver = subscr_get_by_extension(conn->bts->network,
+							gsms->dest_addr);
 	if (!gsms->receiver) {
 		rc = 1; /* cause 1: unknown subscriber */
 		osmo_counter_inc(conn->bts->network->stats.sms.no_receiver);
@@ -629,31 +400,15 @@ out:
 	return rc;
 }
 
-/* Prefix msg with a RP-DATA header and send as SMR DATA */
-static int gsm411_rp_sendmsg(struct gsm411_smr_inst *inst, struct msgb *msg,
-			     uint8_t rp_msg_type, uint8_t rp_msg_ref,
-			     int rl_msg_type)
-{
-	struct gsm411_rp_hdr *rp;
-	uint8_t len = msg->len;
-
-	/* GSM 04.11 RP-DATA header */
-	rp = (struct gsm411_rp_hdr *)msgb_push(msg, sizeof(*rp));
-	rp->len = len + 2;
-	rp->msg_type = rp_msg_type;
-	rp->msg_ref = rp_msg_ref; /* FIXME: Choose randomly */
-
-	return gsm411_smr_send(inst, rl_msg_type, msg);
-}
-
 static int gsm411_send_rp_ack(struct gsm_trans *trans, uint8_t msg_ref)
 {
 	struct msgb *msg = gsm411_msgb_alloc();
 
 	DEBUGP(DLSMS, "TX: SMS RP ACK\n");
 
-	return gsm411_rp_sendmsg(&trans->sms.smr_inst, msg, GSM411_MT_RP_ACK_MT,
-		msg_ref, GSM411_SM_RL_REPORT_REQ);
+	gsm411_push_rp_header(msg, GSM411_MT_RP_ACK_MT, msg_ref);
+	return gsm411_smr_send(&trans->sms.smr_inst, GSM411_SM_RL_REPORT_REQ,
+		msg);
 }
 
 static int gsm411_send_rp_error(struct gsm_trans *trans,
@@ -666,8 +421,9 @@ static int gsm411_send_rp_error(struct gsm_trans *trans,
 	LOGP(DLSMS, LOGL_NOTICE, "TX: SMS RP ERROR, cause %d (%s)\n", cause,
 		get_value_string(gsm411_rp_cause_strs, cause));
 
-	return gsm411_rp_sendmsg(&trans->sms.smr_inst, msg,
-		GSM411_MT_RP_ERROR_MT, msg_ref, GSM411_SM_RL_REPORT_REQ);
+	gsm411_push_rp_header(msg, GSM411_MT_RP_ERROR_MT, msg_ref);
+	return gsm411_smr_send(&trans->sms.smr_inst, GSM411_SM_RL_REPORT_REQ,
+		msg);
 }
 
 /* Receive a 04.11 TPDU inside RP-DATA / user data */
@@ -739,7 +495,8 @@ static int gsm411_rx_rp_ack(struct msgb *msg, struct gsm_trans *trans,
 	 * transmitted */
 
 	if (!sms) {
-		LOGP(DLSMS, LOGL_ERROR, "RX RP-ACK but no sms in transaction?!?\n");
+		LOGP(DLSMS, LOGL_ERROR, "RX RP-ACK but no sms in "
+			"transaction?!?\n");
 		return gsm411_send_rp_error(trans, rph->msg_ref,
 					    GSM411_RP_CAUSE_PROTOCOL_ERR);
 	}
@@ -1006,7 +763,8 @@ int gsm0411_rcv_sms(struct gsm_subscriber_connection *conn,
 		}
 	}
 
-	gsm411_smc_recv(&trans->sms.smc_inst, GSM411_MMSMS_DATA_IND, msg, msg_type);
+	gsm411_smc_recv(&trans->sms.smc_inst, GSM411_MMSMS_DATA_IND, msg,
+			msg_type);
 
 	return rc;
 }
@@ -1087,8 +845,9 @@ int gsm411_send_sms(struct gsm_subscriber_connection *conn, struct gsm_sms *sms)
 	osmo_counter_inc(conn->bts->network->stats.sms.delivered);
 	db_sms_inc_deliver_attempts(trans->sms.sms);
 
-	return gsm411_rp_sendmsg(&trans->sms.smr_inst, msg,
-		GSM411_MT_RP_DATA_MT, msg_ref, GSM411_SM_RL_DATA_REQ);
+	gsm411_push_rp_header(msg, GSM411_MT_RP_DATA_MT, msg_ref);
+	return gsm411_smr_send(&trans->sms.smr_inst, GSM411_SM_RL_DATA_REQ,
+		msg);
 }
 
 /* paging callback. Here we get called if paging a subscriber has
@@ -1101,7 +860,8 @@ static int paging_cb_send_sms(unsigned int hooknum, unsigned int event,
 	int rc = 0;
 
 	DEBUGP(DLSMS, "paging_cb_send_sms(hooknum=%u, event=%u, msg=%p,"
-		"conn=%p, sms=%p/id: %llu)\n", hooknum, event, msg, conn, sms, sms->id);
+		"conn=%p, sms=%p/id: %llu)\n", hooknum, event, msg, conn, sms,
+		sms->id);
 
 	if (hooknum != GSM_HOOK_RR_PAGING)
 		return -EINVAL;
