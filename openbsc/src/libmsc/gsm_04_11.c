@@ -658,7 +658,8 @@ int gsm411_rl_recv(struct gsm411_smr_inst *inst, int msg_type,
 		if (!gh)
 			DEBUGP(DLSMS, "Release transaction on empty report.\n");
 		else {
-			DEBUGP(DLSMS, "Release transaction on error report.\n");
+			DEBUGP(DLSMS, "Release transaction on report with "
+				"data.\n");
 			rc = gsm411_rx_rl_report(msg, gh, trans);
 		}
 		break;
@@ -711,6 +712,7 @@ int gsm0411_rcv_sms(struct gsm_subscriber_connection *conn,
 	uint8_t msg_type = gh->msg_type;
 	uint8_t transaction_id = ((gh->proto_discr >> 4) ^ 0x8); /* flip */
 	struct gsm_trans *trans;
+	int new_trans = 0;
 	int rc = 0;
 
 	if (!conn->subscr)
@@ -736,6 +738,8 @@ int gsm0411_rcv_sms(struct gsm_subscriber_connection *conn,
 		trans->sms.link_id = UM_SAPI_SMS;
 
 		trans->conn = conn;
+
+		new_trans = 1;
 	}
 
 	/* 5.4: For MO, if a CP-DATA is received for a new
@@ -763,8 +767,9 @@ int gsm0411_rcv_sms(struct gsm_subscriber_connection *conn,
 		}
 	}
 
-	gsm411_smc_recv(&trans->sms.smc_inst, GSM411_MMSMS_DATA_IND, msg,
-			msg_type);
+	gsm411_smc_recv(&trans->sms.smc_inst,
+		(new_trans) ? GSM411_MMSMS_EST_IND : GSM411_MMSMS_DATA_IND,
+		msg, msg_type);
 
 	return rc;
 }
