@@ -288,6 +288,9 @@ int rtp_send_frame(struct rtp_socket *rs, struct gsm_data_frame *frame)
 		}
 	}
 
+	if (frame->msg_type == GSM_TCHF_BAD_FRAME)
+		return 0;
+
 	msg = msgb_alloc(sizeof(struct rtp_hdr) + payload_len, "RTP-GSM-FULL");
 	if (!msg)
 		return -ENOMEM;
