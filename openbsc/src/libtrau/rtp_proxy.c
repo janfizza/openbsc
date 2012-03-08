@@ -297,13 +297,18 @@ int rtp_send_frame(struct rtp_socket *rs, struct gsm_data_frame *frame)
 		rs->transmit.last_tv = tv;
 
 		usec_diff = tv_diff.tv_sec * 1000000 + tv_diff.tv_usec;
-		frame_diff = (usec_diff / 20000);
+		frame_diff = ((usec_diff + 10000) / 20000); /* round */
 
-		if (abs(frame_diff) > 1) {
+		if (abs(frame_diff - 1) > 0) {
 			long int frame_diff_excess = frame_diff - 1;
 
+			/* drop frame, if time stamp is in the past */
+			if (frame_diff_excess < 0)
+				return 0;
 			LOGP(DLMUX, LOGL_NOTICE,
-				"Correcting frame difference of %ld frames\n", frame_diff_excess);
+				"Correcting timestamp difference of %ld frames "
+				"(to %s)\n", frame_diff_excess,
+				(rs->rx_action == RTP_RECV_L4) ? "app" : "BTS");
 			rs->transmit.sequence += frame_diff_excess;
 			rs->transmit.timestamp += frame_diff_excess * duration;
 		}
