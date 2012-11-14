@@ -29,6 +29,7 @@ AC_ARG_ENABLE([nat], [AS_HELP_STRING([--enable-nat], [Build the BSC NAT. Require
         osmo_ac_build_nat="no"
     ])
 AM_CONDITIONAL(BUILD_NAT, test "x$osmo_ac_build_nat" = "xyes")
+AC_SUBST(osmo_ac_build_nat)
 
 AC_ARG_ENABLE([osmo-bsc], [AS_HELP_STRING([--enable-osmo-bsc], [Build the Osmo BSC])],
     [
@@ -44,6 +45,7 @@ PKG_CHECK_MODULES(LIBOSMOCORE, libosmocore >= 0.3.2)
 PKG_CHECK_MODULES(LIBOSMOVTY, libosmovty >= 0.3.0)
 PKG_CHECK_MODULES(LIBOSMOGSM, libosmogsm >= 0.3.0)
 PKG_CHECK_MODULES(LIBOSMOABIS, libosmoabis >= 0.1.0)
+PKG_CHECK_MODULES(LIBOSMOGB, libosmogb >= 0.5.2)
 
 found_libgtp=yes
 PKG_CHECK_MODULES(LIBGTP, libgtp, , found_libgtp=no)
@@ -82,6 +84,30 @@ if test "$enable_coverage" = "yes"; then
    AC_SUBST([COVERAGE_LDFLAGS])
 fi
 
+AC_DEFUN([CHECK_TM_INCLUDES_TM_GMTOFF], [
+  AC_CACHE_CHECK(
+    [whether struct tm has tm_gmtoff member],
+    osmo_cv_tm_includes_tm_gmtoff,
+    [AC_LINK_IFELSE([
+      AC_LANG_PROGRAM([
+        #include <time.h>
+      ], [
+        time_t t = time(NULL);
+        struct tm* lt = localtime(&t);
+        int off = lt->tm_gmtoff;
+      ])
+    ],
+    osmo_cv_tm_includes_tm_gmtoff=yes,
+    osmo_cv_tm_includes_tm_gmtoff=no
+    )]
+  )
+  if test "x$osmo_cv_tm_includes_tm_gmtoff" = xyes; then
+    AC_DEFINE(HAVE_TM_GMTOFF_IN_TM, 1,
+              [Define if struct tm has tm_gmtoff member.])
+  fi
+])
+
+CHECK_TM_INCLUDES_TM_GMTOFF
 
 dnl Generate the output
 AM_CONFIG_HEADER(bscconfig.h)
@@ -103,16 +129,16 @@ AC_OUTPUT(
     src/osmo-bsc_mgcp/Makefile
     src/ipaccess/Makefile
     src/utils/Makefile
-    src/libgb/Makefile
     src/gprs/Makefile
     tests/Makefile
-    tests/debug/Makefile
+    tests/atlocal
     tests/gsm0408/Makefile
     tests/db/Makefile
     tests/channel/Makefile
     tests/bsc-nat/Makefile
     tests/mgcp/Makefile
     tests/gprs/Makefile
+    tests/si/Makefile
     doc/Makefile
     doc/examples/Makefile
     Makefile)

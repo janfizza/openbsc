@@ -1,6 +1,6 @@
 /* GSM 08.08 BSSMAP handling						*/
-/* (C) 2009-2010 by Holger Hans Peter Freyther <zecke@selfish.org>
- * (C) 2009-2010 by On-Waves
+/* (C) 2009-2011 by Holger Hans Peter Freyther <zecke@selfish.org>
+ * (C) 2009-2011 by On-Waves
  * All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify
@@ -98,7 +98,7 @@ enum gsm48_chan_mode gsm88_to_chan_mode(enum gsm0808_permitted_speech speech)
 	return GSM48_CMODE_SPEECH_AMR;
 }
 
-static int bssmap_handle_reset_ack(struct gsm_network *net,
+static int bssmap_handle_reset_ack(struct osmo_msc_data *msc,
 				   struct msgb *msg, unsigned int length)
 {
 	LOGP(DMSC, LOGL_NOTICE, "Reset ACK from MSC\n");
@@ -106,7 +106,7 @@ static int bssmap_handle_reset_ack(struct gsm_network *net,
 }
 
 /* GSM 08.08 § 3.2.1.19 */
-static int bssmap_handle_paging(struct gsm_network *net,
+static int bssmap_handle_paging(struct osmo_msc_data *msc,
 				struct msgb *msg, unsigned int payload_length)
 {
 	struct gsm_subscriber *subscr;
@@ -121,7 +121,7 @@ static int bssmap_handle_paging(struct gsm_network *net,
 	tlv_parse(&tp, gsm0808_att_tlvdef(), msg->l4h + 1, payload_length - 1, 0, 0);
 
 	if (!TLVP_PRESENT(&tp, GSM0808_IE_IMSI)) {
-		LOGP(DMSC, LOGL_ERROR, "Mandantory IMSI not present.\n");
+		LOGP(DMSC, LOGL_ERROR, "Mandatory IMSI not present.\n");
 		return -1;
 	} else if ((TLVP_VAL(&tp, GSM0808_IE_IMSI)[0] & GSM_MI_TYPE_MASK) != GSM_MI_TYPE_IMSI) {
 		LOGP(DMSC, LOGL_ERROR, "Wrong content in the IMSI\n");
@@ -129,16 +129,14 @@ static int bssmap_handle_paging(struct gsm_network *net,
 	}
 
 	if (!TLVP_PRESENT(&tp, GSM0808_IE_CELL_IDENTIFIER_LIST)) {
-		LOGP(DMSC, LOGL_ERROR, "Mandantory CELL IDENTIFIER LIST not present.\n");
+		LOGP(DMSC, LOGL_ERROR, "Mandatory CELL IDENTIFIER LIST not present.\n");
 		return -1;
 	}
 
-	if (TLVP_PRESENT(&tp, GSM0808_IE_TMSI)) {
-		gsm48_mi_to_string(mi_string, sizeof(mi_string),
-			   TLVP_VAL(&tp, GSM0808_IE_TMSI), TLVP_LEN(&tp, GSM0808_IE_TMSI));
-		tmsi = strtoul(mi_string, NULL, 10);
+	if (TLVP_PRESENT(&tp, GSM0808_IE_TMSI) &&
+	    TLVP_LEN(&tp, GSM0808_IE_TMSI) == 4) {
+		tmsi = ntohl(*(uint32_t *) TLVP_VAL(&tp, GSM0808_IE_TMSI));
 	}
-
 
 	/*
 	 * parse the IMSI
@@ -169,7 +167,7 @@ static int bssmap_handle_paging(struct gsm_network *net,
 		LOGP(DMSC, LOGL_ERROR, "eMLPP is not handled\n");
 	}
 
-	subscr = subscr_get_or_create(net, mi_string);
+	subscr = subscr_get_or_create(msc->network, mi_string);
 	if (!subscr) {
 		LOGP(DMSC, LOGL_ERROR, "Failed to allocate a subscriber for %s\n", mi_string);
 		return -1;
@@ -179,7 +177,7 @@ static int bssmap_handle_paging(struct gsm_network *net,
 	subscr->tmsi = tmsi;
 
 	LOGP(DMSC, LOGL_INFO, "Paging request from MSC IMSI: '%s' TMSI: '0x%x/%u' LAC: 0x%x\n", mi_string, tmsi, tmsi, lac);
-	paging_request(net, subscr, chan_needed, NULL, NULL);
+	paging_request(msc->network, subscr, chan_needed, NULL, msc);
 	return 0;
 }
 
@@ -298,7 +296,7 @@ static int bssmap_handle_assignm_req(struct osmo_bsc_sccp_con *conn,
 				     struct msgb *msg, unsigned int length)
 {
 	struct msgb *resp;
-	struct gsm_network *network;
+	struct osmo_msc_data *msc;
 	struct tlv_parsed tp;
 	uint8_t *data;
 	uint16_t cic;
@@ -312,11 +310,10 @@ static int bssmap_handle_assignm_req(struct osmo_bsc_sccp_con *conn,
 		return -1;
 	}
 
-	network = conn->conn->bts->network;
 	tlv_parse(&tp, gsm0808_att_tlvdef(), msg->l4h + 1, length - 1, 0, 0);
 
 	if (!TLVP_PRESENT(&tp, GSM0808_IE_CHANNEL_TYPE)) {
-		LOGP(DMSC, LOGL_ERROR, "Mandantory channel type not present.\n");
+		LOGP(DMSC, LOGL_ERROR, "Mandatory channel type not present.\n");
 		goto reject;
 	}
 
@@ -351,11 +348,6 @@ static int bssmap_handle_assignm_req(struct osmo_bsc_sccp_con *conn,
 		goto reject;
 	}
 
-	if (data[1] != GSM0808_SPEECH_FULL_PREF && data[1] != GSM0808_SPEECH_HALF_PREF) {
-		LOGP(DMSC, LOGL_ERROR, "ChannelType full not allowed: %d\n", data[1]);
-		goto reject;
-	}
-
 	/*
 	 * go through the list of preferred codecs of our gsm network
 	 * and try to find it among the permitted codecs. If we found
@@ -364,11 +356,12 @@ static int bssmap_handle_assignm_req(struct osmo_bsc_sccp_con *conn,
 	 * the correct value.
 	 */
 	full_rate = 0;
+	msc = conn->msc;
 	for (supported = 0;
-		chan_mode == GSM48_CMODE_SIGN && supported < network->msc_data->audio_length;
+		chan_mode == GSM48_CMODE_SIGN && supported < msc->audio_length;
 		++supported) {
 
-		int perm_val = audio_support_to_gsm88(network->msc_data->audio_support[supported]);
+		int perm_val = audio_support_to_gsm88(msc->audio_support[supported]);
 		for (i = 2; i < TLVP_LEN(&tp, GSM0808_IE_CHANNEL_TYPE); ++i) {
 			if ((data[i] & 0x7f) == perm_val) {
 				chan_mode = gsm88_to_chan_mode(perm_val);
@@ -387,8 +380,7 @@ static int bssmap_handle_assignm_req(struct osmo_bsc_sccp_con *conn,
 
 	/* map it to a MGCP Endpoint and a RTP port */
 	port = mgcp_timeslot_to_endpoint(multiplex, timeslot);
-	conn->rtp_port = rtp_calculate_port(port,
-						network->msc_data->rtp_base);
+	conn->rtp_port = rtp_calculate_port(port, msc->rtp_base);
 
 	return gsm0808_assign_req(conn->conn, chan_mode, full_rate);
 
@@ -403,7 +395,7 @@ reject:
 	return -1;
 }
 
-static int bssmap_rcvmsg_udt(struct gsm_network *net,
+static int bssmap_rcvmsg_udt(struct osmo_msc_data *msc,
 			     struct msgb *msg, unsigned int length)
 {
 	int ret = 0;
@@ -418,11 +410,11 @@ static int bssmap_rcvmsg_udt(struct gsm_network *net,
 
 	switch (msg->l4h[0]) {
 	case BSS_MAP_MSG_RESET_ACKNOWLEDGE:
-		ret = bssmap_handle_reset_ack(net, msg, length);
+		ret = bssmap_handle_reset_ack(msc, msg, length);
 		break;
 	case BSS_MAP_MSG_PAGING:
-		if (bsc_grace_allow_new_connection(net))
-			ret = bssmap_handle_paging(net, msg, length);
+		if (bsc_grace_allow_new_connection(msc->network))
+			ret = bssmap_handle_paging(msc, msg, length);
 		break;
 	}
 
@@ -478,7 +470,7 @@ static int dtap_rcvmsg(struct osmo_bsc_sccp_con *conn,
 
 	header = (struct dtap_header *) msg->l3h;
 	if (sizeof(*header) >= length) {
-		LOGP(DMSC, LOGL_ERROR, "The DTAP header does not fit. Wanted: %lu got: %u\n", sizeof(*header), length);
+		LOGP(DMSC, LOGL_ERROR, "The DTAP header does not fit. Wanted: %zu got: %u\n", sizeof(*header), length);
                 LOGP(DMSC, LOGL_ERROR, "hex: %s\n", osmo_hexdump(msg->l3h, length));
                 return -1;
 	}
@@ -507,8 +499,7 @@ static int dtap_rcvmsg(struct osmo_bsc_sccp_con *conn,
 	return gsm0808_submit_dtap(conn->conn, gsm48, header->link_id, 1);
 }
 
-int bsc_handle_udt(struct gsm_network *network,
-		   struct bsc_msc_connection *conn,
+int bsc_handle_udt(struct osmo_msc_data *msc,
 		   struct msgb *msgb, unsigned int length)
 {
 	struct bssmap_header *bs;
@@ -528,7 +519,7 @@ int bsc_handle_udt(struct gsm_network *network,
 	switch (bs->type) {
 	case BSSAP_MSG_BSS_MANAGEMENT:
 		msgb->l4h = &msgb->l3h[sizeof(*bs)];
-		bssmap_rcvmsg_udt(network, msgb, length - sizeof(*bs));
+		bssmap_rcvmsg_udt(msc, msgb, length - sizeof(*bs));
 		break;
 	default:
 		LOGP(DMSC, LOGL_NOTICE, "Unimplemented msg type: %s\n",

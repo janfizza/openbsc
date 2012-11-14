@@ -1,6 +1,6 @@
 INCLUDES = $(all_includes) -I$(top_srcdir)/include -I$(top_builddir)
-AM_CFLAGS=-Wall $(LIBOSMOCORE_CFLAGS) $(LIBOSMOGSM_CFLAGS) $(LIBOSMOVTY_CFLAGS) $(COVERAGE_CFLAGS)
-AM_LDFLAGS = $(LIBOSMOCORE_LIBS) $(LIBOSMOGSM_LIBS) $(COVERAGE_LDFLAGS)
+AM_CFLAGS=-Wall $(LIBOSMOCORE_CFLAGS) $(LIBOSMOGSM_CFLAGS) \
+	$(LIBOSMOVTY_CFLAGS) $(LIBOSMOABIS_CFLAGS) $(COVERAGE_CFLAGS)
 
 noinst_LIBRARIES = libbsc.a
 
@@ -14,6 +14,7 @@ libbsc_a_SOURCES =	abis_nm.c abis_nm_vty.c \
 			bts_nokia_site.c \
 			bts_hsl_femtocell.c \
 			bts_unknown.c \
+			bts_sysmobts.c \
 			chan_alloc.c \
 			gsm_subscriber_base.c \
 			handover_decision.c handover_logic.c meas_rep.c \
@@ -21,5 +22,6 @@ libbsc_a_SOURCES =	abis_nm.c abis_nm_vty.c \
 			e1_config.c \
 			bsc_api.c bsc_msc.c bsc_vty.c \
 			gsm_04_08_utils.c \
-			bsc_init.c bts_init.c
+			bsc_init.c bts_init.c bsc_rf_ctrl.c \
+			arfcn_range_encode.c
 

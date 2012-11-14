@@ -63,7 +63,24 @@ static int dummy_config_write(struct vty *v)
 
 /* FIXME: auto-generate those strings from the value_string lists */
 #define NM_OBJCLASS_VTY "(site-manager|bts|radio-carrier|baseband-transceiver|channel|adjc|handover|power-contorl|btse|rack|test|envabtse|bport|gprs-nse|gprs-cell|gprs-nsvc|siemenshw)"
-#define NM_OBJCLASS_VTY_HELP "FIXME"
+#define NM_OBJCLASS_VTY_HELP	"Site Manager Object\n"			\
+				"BTS Object\n"				\
+				"Radio Carrier Object\n"		\
+				"Baseband Transceiver Object\n"		\
+				"Channel (Timeslot) Object\n"		\
+				"Adjacent Object (Siemens)\n"		\
+				"Handover Object (Siemens)\n"		\
+				"Power Control Object (Siemens)\n"	\
+				"BTSE Object (Siemens)\n"		\
+				"Rack Object (Siemens)\n"		\
+				"Test Object (Siemens)\n"		\
+				"ENVABTSE Object (Siemens)\n"		\
+				"BPORT Object (Siemens)\n"		\
+				"GPRS NSE Object (ip.access/osmo-bts)\n"	\
+				"GPRS Cell Object (ip.acecss/osmo-bts)\n"	\
+				"GPRS NSVC Object (ip.acecss/osmo-bts)\n"	\
+				"SIEMENSHW Object (Siemens)\n"
+
 
 DEFUN(oml_class_inst, oml_class_inst_cmd,
 	"bts <0-255> oml class " NM_OBJCLASS_VTY
@@ -133,28 +150,6 @@ DEFUN(oml_classnum_inst, oml_classnum_inst_cmd,
 	return CMD_SUCCESS;
 }
 
-DEFUN(oml_attrib_get, oml_attrib_get_cmd,
-	"attribute get <0-255>",
-	"OML Attribute Actions\n" "Get a single OML Attribute\n"
-	"OML Attribute Number\n")
-{
-	struct oml_node_state *oms = vty->index;
-
-	/* FIXME */
-	return CMD_SUCCESS;
-}
-
-DEFUN(oml_attrib_set, oml_attrib_set_cmd,
-	"attribute set <0-255> .HEX",
-	"OML Attribute Actions\n" "Set a single OML Attribute\n"
-	"OML Attribute Number\n")
-{
-	struct oml_node_state *oms = vty->index;
-
-	/* FIXME */
-	return CMD_SUCCESS;
-}
-
 DEFUN(oml_chg_adm_state, oml_chg_adm_state_cmd,
 	"change-adm-state (locked|unlocked|shutdown|null)",
 	"Change the Administrative State\n"
@@ -190,8 +185,6 @@ int abis_nm_vty_init(void)
 
 	install_default(OML_NODE);
 	install_element(OML_NODE, &ournode_exit_cmd);
-	install_element(OML_NODE, &oml_attrib_get_cmd);
-	install_element(OML_NODE, &oml_attrib_set_cmd);
 	install_element(OML_NODE, &oml_chg_adm_state_cmd);
 	install_element(OML_NODE, &oml_opstart_cmd);
 

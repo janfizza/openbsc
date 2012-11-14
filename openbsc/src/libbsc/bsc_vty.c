@@ -25,6 +25,7 @@
 #include <osmocom/vty/vty.h>
 #include <osmocom/vty/logging.h>
 #include <osmocom/vty/telnet_interface.h>
+#include <osmocom/vty/misc.h>
 
 #include <arpa/inet.h>
 
@@ -41,7 +42,7 @@
 #include <openbsc/db.h>
 #include <osmocom/core/talloc.h>
 #include <openbsc/vty.h>
-#include <openbsc/gprs_ns.h>
+#include <osmocom/gprs/gprs_ns.h>
 #include <openbsc/system_information.h>
 #include <openbsc/debug.h>
 #include <openbsc/paging.h>
@@ -96,25 +97,25 @@ static const struct value_string bts_neigh_mode_strs[] = {
 
 struct cmd_node net_node = {
 	GSMNET_NODE,
-	"%s(network)#",
+	"%s(config-net)# ",
 	1,
 };
 
 struct cmd_node bts_node = {
 	BTS_NODE,
-	"%s(bts)#",
+	"%s(config-net-bts)# ",
 	1,
 };
 
 struct cmd_node trx_node = {
 	TRX_NODE,
-	"%s(trx)#",
+	"%s(config-net-bts-trx)# ",
 	1,
 };
 
 struct cmd_node ts_node = {
 	TS_NODE,
-	"%s(ts)#",
+	"%s(config-net-bts-trx-ts)# ",
 	1,
 };
 
@@ -197,9 +198,9 @@ static void net_dump_vty(struct vty *vty, struct gsm_network *net)
 	dump_pchan_load_vty(vty, "    ", &pl);
 
 	/* show rf */
-	if (net->msc_data && net->msc_data->rf_ctrl)
+	if (net->bsc_data && net->bsc_data->rf_ctrl)
 		vty_out(vty, "  Last RF Command: %s%s",
-			net->msc_data->rf_ctrl->last_state_command,
+			net->bsc_data->rf_ctrl->last_state_command,
 			VTY_NEWLINE);
 }
 
@@ -255,6 +256,12 @@ static void bts_dump_vty(struct vty *vty, struct gsm_bts *bts)
 		VTY_NEWLINE);
 	if (bts->si_common.rach_control.cell_bar)
 		vty_out(vty, "  CELL IS BARRED%s", VTY_NEWLINE);
+	vty_out(vty, "Channel Description Attachment: %s%s",
+		(bts->si_common.chan_desc.att) ? "yes" : "no", VTY_NEWLINE);
+	vty_out(vty, "Channel Description BS-PA-MFRMS: %u%s",
+		bts->si_common.chan_desc.bs_pa_mfrms + 2, VTY_NEWLINE);
+	vty_out(vty, "Channel Description BS-AG_BLKS-RES: %u%s",
+		bts->si_common.chan_desc.bs_ag_blks_res, VTY_NEWLINE);
 	vty_out(vty, "System Information present: 0x%08x, static: 0x%08x%s",
 		bts->si_valid, bts->si_mode_static, VTY_NEWLINE);
 	if (is_ipaccess_bts(bts))
@@ -288,7 +295,7 @@ static void bts_dump_vty(struct vty *vty, struct gsm_bts *bts)
 	dump_pchan_load_vty(vty, "    ", &pl);
 }
 
-DEFUN(show_bts, show_bts_cmd, "show bts [number]",
+DEFUN(show_bts, show_bts_cmd, "show bts <0-255>",
 	SHOW_STR "Display information about a BTS\n"
 		"BTS number")
 {
@@ -448,8 +455,8 @@ static void config_write_bts_single(struct vty *vty, struct gsm_bts *bts)
 		VTY_NEWLINE);
 	vty_out(vty, "  training_sequence_code %u%s", bts->tsc, VTY_NEWLINE);
 	vty_out(vty, "  base_station_id_code %u%s", bts->bsic, VTY_NEWLINE);
-	if (bts->tz_bts_specific != 0)
-		vty_out(vty, "  timezone %d %d%s", bts->tzhr, bts->tzmn, VTY_NEWLINE);
+	if (bts->tz.override != 0)
+		vty_out(vty, "  timezone %d %d%s", bts->tz.hr, bts->tz.mn, VTY_NEWLINE);
 	vty_out(vty, "  ms max power %u%s", bts->ms_max_power, VTY_NEWLINE);
 	vty_out(vty, "  cell reselection hysteresis %u%s",
 		bts->si_common.cell_sel_par.cell_resel_hyst*2, VTY_NEWLINE);
@@ -495,6 +502,13 @@ static void config_write_bts_single(struct vty *vty, struct gsm_bts *bts)
 		rach_max_trans_raw2val(bts->si_common.rach_control.max_trans),
 		VTY_NEWLINE);
 
+	vty_out(vty, "  channel-descrption attach %u%s",
+		bts->si_common.chan_desc.att, VTY_NEWLINE);
+	vty_out(vty, "  channel-descrption bs-pa-mfrms %u%s",
+		bts->si_common.chan_desc.bs_pa_mfrms + 2, VTY_NEWLINE);
+	vty_out(vty, "  channel-descrption bs-ag-blks-res %u%s",
+		bts->si_common.chan_desc.bs_ag_blks_res, VTY_NEWLINE);
+
 	if (bts->rach_b_thresh != -1)
 		vty_out(vty, "  rach nm busy threshold %u%s",
 			bts->rach_b_thresh, VTY_NEWLINE);
@@ -517,6 +531,7 @@ static void config_write_bts_single(struct vty *vty, struct gsm_bts *bts)
 	}
 	switch (bts->type) {
 	case GSM_BTS_TYPE_NANOBTS:
+	case GSM_BTS_TYPE_OSMO_SYSMO:
 		vty_out(vty, "  ip.access unit_id %u %u%s",
 			bts->ip_access.site_id, bts->ip_access.bts_id, VTY_NEWLINE);
 		vty_out(vty, "  oml ip.access stream_id %u line %u%s",
@@ -652,7 +667,7 @@ static void trx_dump_vty(struct vty *vty, struct gsm_bts_trx *trx)
 
 DEFUN(show_trx,
       show_trx_cmd,
-      "show trx [bts_nr] [trx_nr]",
+      "show trx <0-255> <0-255>",
 	SHOW_STR "Display information about a TRX\n"
 	"BTS Number\n"
 	"TRX Number\n")
@@ -723,7 +738,7 @@ static void ts_dump_vty(struct vty *vty, struct gsm_bts_trx_ts *ts)
 
 DEFUN(show_ts,
       show_ts_cmd,
-      "show timeslot [bts_nr] [trx_nr] [ts_nr]",
+      "show timeslot <0-255> <0-255> <0-7>",
 	SHOW_STR "Display information about a TS\n"
 	"BTS Number\n" "TRX Number\n" "Timeslot Number\n")
 {
@@ -903,6 +918,47 @@ static void lchan_dump_short_vty(struct vty *vty, struct gsm_lchan *lchan)
 		VTY_NEWLINE);
 }
 
+
+static int dump_lchan_trx_ts(struct gsm_bts_trx_ts *ts, struct vty *vty,
+			     void (*dump_cb)(struct vty *, struct gsm_lchan *))
+{
+	int lchan_nr;
+	for (lchan_nr = 0; lchan_nr < TS_MAX_LCHAN; lchan_nr++) {
+		struct gsm_lchan *lchan = &ts->lchan[lchan_nr];
+		if ((lchan->type == GSM_LCHAN_NONE) && (lchan->state == LCHAN_S_NONE))
+			continue;
+		dump_cb(vty, lchan);
+	}
+
+	return CMD_SUCCESS;
+}
+
+static int dump_lchan_trx(struct gsm_bts_trx *trx, struct vty *vty,
+			  void (*dump_cb)(struct vty *, struct gsm_lchan *))
+{
+	int ts_nr;
+
+	for (ts_nr = 0; ts_nr < TRX_NR_TS; ts_nr++) {
+		struct gsm_bts_trx_ts *ts = &trx->ts[ts_nr];
+		dump_lchan_trx_ts(ts, vty, dump_cb);
+	}
+
+	return CMD_SUCCESS;
+}
+
+static int dump_lchan_bts(struct gsm_bts *bts, struct vty *vty,
+			  void (*dump_cb)(struct vty *, struct gsm_lchan *))
+{
+	int trx_nr;
+
+	for (trx_nr = 0; trx_nr < bts->num_trx; trx_nr++) {
+		struct gsm_bts_trx *trx = gsm_bts_trx_num(bts, trx_nr);
+		dump_lchan_trx(trx, vty, dump_cb);
+	}
+
+	return CMD_SUCCESS;
+}
+
 static int lchan_summary(struct vty *vty, int argc, const char **argv,
 			 void (*dump_cb)(struct vty *, struct gsm_lchan *))
 {
@@ -922,6 +978,9 @@ static int lchan_summary(struct vty *vty, int argc, const char **argv,
 			return CMD_WARNING;
 		}
 		bts = gsm_bts_num(net, bts_nr);
+
+		if (argc == 1)
+			return dump_lchan_bts(bts, vty, dump_cb);
 	}
 	if (argc >= 2) {
 		trx_nr = atoi(argv[1]);
@@ -931,6 +990,9 @@ static int lchan_summary(struct vty *vty, int argc, const char **argv,
 			return CMD_WARNING;
 		}
 		trx = gsm_bts_trx_num(bts, trx_nr);
+
+		if (argc == 2)
+			return dump_lchan_trx(trx, vty, dump_cb);
 	}
 	if (argc >= 3) {
 		ts_nr = atoi(argv[2]);
@@ -940,6 +1002,9 @@ static int lchan_summary(struct vty *vty, int argc, const char **argv,
 			return CMD_WARNING;
 		}
 		ts = &trx->ts[ts_nr];
+
+		if (argc == 3)
+			return dump_lchan_trx_ts(ts, vty, dump_cb);
 	}
 	if (argc >= 4) {
 		lchan_nr = atoi(argv[3]);
@@ -952,21 +1017,11 @@ static int lchan_summary(struct vty *vty, int argc, const char **argv,
 		dump_cb(vty, lchan);
 		return CMD_SUCCESS;
 	}
+
+
 	for (bts_nr = 0; bts_nr < net->num_bts; bts_nr++) {
 		bts = gsm_bts_num(net, bts_nr);
-		for (trx_nr = 0; trx_nr < bts->num_trx; trx_nr++) {
-			trx = gsm_bts_trx_num(bts, trx_nr);
-			for (ts_nr = 0; ts_nr < TRX_NR_TS; ts_nr++) {
-				ts = &trx->ts[ts_nr];
-				for (lchan_nr = 0; lchan_nr < TS_MAX_LCHAN;
-				     lchan_nr++) {
-					lchan = &ts->lchan[lchan_nr];
-					if ((lchan->type == GSM_LCHAN_NONE) && (lchan->state == LCHAN_S_NONE))
-						continue;
-					dump_cb(vty, lchan);
-				}
-			}
-		}
+		dump_lchan_bts(bts, vty, dump_cb);
 	}
 
 	return CMD_SUCCESS;
@@ -975,7 +1030,7 @@ static int lchan_summary(struct vty *vty, int argc, const char **argv,
 
 DEFUN(show_lchan,
       show_lchan_cmd,
-      "show lchan [bts_nr] [trx_nr] [ts_nr] [lchan_nr]",
+      "show lchan <0-255> <0-255> <0-7> [lchan_nr]",
 	SHOW_STR "Display information about a logical channel\n"
 	"BTS Number\n" "TRX Number\n" "Timeslot Number\n"
 	LCHAN_NR_STR)
@@ -986,7 +1041,7 @@ DEFUN(show_lchan,
 
 DEFUN(show_lchan_summary,
       show_lchan_summary_cmd,
-      "show lchan summary [bts_nr] [trx_nr] [ts_nr] [lchan_nr]",
+      "show lchan summary <0-255> <0-255> <0-7> [lchan_nr]",
 	SHOW_STR "Display information about a logical channel\n"
         "Short summary\n"
 	"BTS Number\n" "TRX Number\n" "Timeslot Number\n"
@@ -1011,7 +1066,7 @@ static void bts_paging_dump_vty(struct vty *vty, struct gsm_bts *bts)
 
 DEFUN(show_paging,
       show_paging_cmd,
-      "show paging [bts_nr]",
+      "show paging <0-255>",
 	SHOW_STR "Display information about paging reuqests of a BTS\n"
 	"BTS Number\n")
 {
@@ -1122,7 +1177,11 @@ DEFUN(cfg_net_auth_policy,
 DEFUN(cfg_net_reject_cause,
       cfg_net_reject_cause_cmd,
       "location updating reject cause <2-111>",
-      "Set the reject cause of location updating reject\n")
+      "Set the reject cause of location updating reject\n"
+      "Set the reject cause of location updating reject\n"
+      "Set the reject cause of location updating reject\n"
+      "Set the reject cause of location updating reject\n"
+      "Cause Value as Per GSM TS 04.08\n")
 {
 	struct gsm_network *gsmnet = gsmnet_from_vty(vty);
 
@@ -1133,10 +1192,11 @@ DEFUN(cfg_net_reject_cause,
 
 DEFUN(cfg_net_encryption,
       cfg_net_encryption_cmd,
-      "encryption a5 (0|1|2)",
+      "encryption a5 (0|1|2|3)",
 	"Encryption options\n"
 	"A5 encryption\n" "A5/0: No encryption\n"
-	"A5/1: Encryption\n" "A5/2: Export-grade Encryption\n")
+	"A5/1: Encryption\n" "A5/2: Export-grade Encryption\n"
+	"A5/3: 'New' Secure Encryption\n")
 {
 	struct gsm_network *gsmnet = gsmnet_from_vty(vty);
 
@@ -1176,7 +1236,9 @@ DEFUN(cfg_net_rrlp_mode, cfg_net_rrlp_mode_cmd,
 
 DEFUN(cfg_net_mm_info, cfg_net_mm_info_cmd,
       "mm info (0|1)",
-	"Whether to send MM INFO after LOC UPD ACCEPT")
+	"Mobility Management\n"
+	"Send MM INFO after LOC UPD ACCEPT\n"
+	"Disable\n" "Enable\n")
 {
 	struct gsm_network *gsmnet = gsmnet_from_vty(vty);
 
@@ -1315,7 +1377,7 @@ DEFUN(cfg_net_pag_any_tch,
 
 DECLARE_TIMER(3101, "Set the timeout value for IMMEDIATE ASSIGNMENT.\n")
 DECLARE_TIMER(3103, "Set the timeout value for HANDOVER.\n")
-DECLARE_TIMER(3105, "Currently not used.\n")
+DECLARE_TIMER(3105, "Set the timer for repetition of PHYSICAL INFORMATION.\n")
 DECLARE_TIMER(3107, "Currently not used.\n")
 DECLARE_TIMER(3109, "Currently not used.\n")
 DECLARE_TIMER(3111, "Set the RSL timeout to wait before releasing the RF Channel.\n")
@@ -1351,7 +1413,7 @@ DEFUN(cfg_net_subscr_keep,
 /* per-BTS configuration */
 DEFUN(cfg_bts,
       cfg_bts_cmd,
-      "bts BTS_NR",
+      "bts <0-255>",
       "Select a BTS to configure\n"
 	"BTS Number\n")
 {
@@ -1385,7 +1447,7 @@ DEFUN(cfg_bts,
 
 DEFUN(cfg_bts_type,
       cfg_bts_type_cmd,
-      "type TYPE",
+      "type TYPE", /* dynamically created */
       "Set the BTS type\n" "Type\n")
 {
 	struct gsm_bts *bts = vty->index;
@@ -1420,7 +1482,7 @@ DEFUN(cfg_bts_band,
 DEFUN(cfg_bts_ci,
       cfg_bts_ci_cmd,
       "cell_identity <0-65535>",
-      "Set the Cell identity of this BTS\n")
+      "Set the Cell identity of this BTS\n" "Cell Identity\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int ci = atoi(argv[0]);
@@ -1438,7 +1500,7 @@ DEFUN(cfg_bts_ci,
 DEFUN(cfg_bts_lac,
       cfg_bts_lac_cmd,
       "location_area_code <0-65535>",
-      "Set the Location Area Code (LAC) of this BTS\n")
+      "Set the Location Area Code (LAC) of this BTS\n" "LAC\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int lac = atoi(argv[0]);
@@ -1463,17 +1525,12 @@ DEFUN(cfg_bts_lac,
 
 DEFUN(cfg_bts_tsc,
       cfg_bts_tsc_cmd,
-      "training_sequence_code <0-255>",
-      "Set the Training Sequence Code (TSC) of this BTS\n")
+      "training_sequence_code <0-7>",
+      "Set the Training Sequence Code (TSC) of this BTS\n" "TSC\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int tsc = atoi(argv[0]);
 
-	if (tsc < 0 || tsc > 0xff) {
-		vty_out(vty, "%% TSC %d is not in the valid range (0-255)%s",
-			tsc, VTY_NEWLINE);
-		return CMD_WARNING;
-	}
 	bts->tsc = tsc;
 
 	return CMD_SUCCESS;
@@ -1482,7 +1539,8 @@ DEFUN(cfg_bts_tsc,
 DEFUN(cfg_bts_bsic,
       cfg_bts_bsic_cmd,
       "base_station_id_code <0-63>",
-      "Set the Base Station Identity Code (BSIC) of this BTS\n")
+      "Set the Base Station Identity Code (BSIC) of this BTS\n"
+      "BSIC of this BTS\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int bsic = atoi(argv[0]);
@@ -1500,15 +1558,21 @@ DEFUN(cfg_bts_bsic,
 DEFUN(cfg_bts_timezone,
       cfg_bts_timezone_cmd,
       "timezone <-19-19> (0|15|30|45)",
-      "Set the Timezone Offset of this BTS\n")
+      "Set the Timezone Offset of this BTS\n"
+      "Timezone offset (hours)\n"
+      "Timezone offset (00 minutes)\n"
+      "Timezone offset (15 minutes)\n"
+      "Timezone offset (30 minutes)\n"
+      "Timezone offset (45 minutes)\n"
+      )
 {
 	struct gsm_bts *bts = vty->index;
 	int tzhr = atoi(argv[0]);
 	int tzmn = atoi(argv[1]);
 
-	bts->tzhr = tzhr;
-	bts->tzmn = tzmn;
-	bts->tz_bts_specific=1;
+	bts->tz.hr = tzhr;
+	bts->tz.mn = tzmn;
+	bts->tz.override = 1;
 
 	return CMD_SUCCESS;
 }
@@ -1516,17 +1580,23 @@ DEFUN(cfg_bts_timezone,
 DEFUN(cfg_bts_no_timezone,
       cfg_bts_no_timezone_cmd,
       "no timezone",
-      "disable bts specific timezone\n")
+      NO_STR
+      "Disable BTS specific timezone\n")
 {
 	struct gsm_bts *bts = vty->index;
-	bts->tz_bts_specific=0;
+
+	bts->tz.override = 0;
+
 	return CMD_SUCCESS;
 }
 
 DEFUN(cfg_bts_unit_id,
       cfg_bts_unit_id_cmd,
       "ip.access unit_id <0-65534> <0-255>",
-      "Set the ip.access BTS Unit ID of this BTS\n")
+      "Abis/IP specific options\n"
+      "Set the IPA BTS Unit ID\n"
+      "Unit ID (Site)\n"
+      "Unit ID (BTS)\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int site_id = atoi(argv[0]);
@@ -1546,7 +1616,9 @@ DEFUN(cfg_bts_unit_id,
 DEFUN(cfg_bts_serno,
       cfg_bts_serno_cmd,
       "hsl serial-number STRING",
-      "Set the HSL Serial Number of this BTS\n")
+      "HSL BTS specific options\n"
+      "Set the HSL Serial Number of this BTS\n"
+      "Serial Number of this HSL BTS\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1563,7 +1635,9 @@ DEFUN(cfg_bts_serno,
 DEFUN(cfg_bts_nokia_site_skip_reset,
       cfg_bts_nokia_site_skip_reset_cmd,
       "nokia_site skip-reset (0|1)",
-      "Skip the reset step during bootstrap process of this BTS\n")
+      "Nokia *Site related commands\n"
+      "Skip the reset step during bootstrap process of this BTS\n"
+      "Do NOT skip the reset\n" "Skip the reset\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1578,13 +1652,14 @@ DEFUN(cfg_bts_nokia_site_skip_reset,
 }
 
 #define OML_STR	"Organization & Maintenance Link\n"
-#define IPA_STR "ip.access Specific Options\n"
+#define IPA_STR "A-bis/IP Specific Options\n"
 
 DEFUN(cfg_bts_stream_id,
       cfg_bts_stream_id_cmd,
       "oml ip.access stream_id <0-255> line E1_LINE",
 	OML_STR IPA_STR
-      "Set the ip.access Stream ID of the OML link of this BTS\n")
+      "Set the ip.access Stream ID of the OML link of this BTS\n"
+      "Stream Identifier\n" "Virtual E1 Line Number\n" "Virtual E1 Line Number\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int stream_id = atoi(argv[0]), linenr = atoi(argv[1]);
@@ -1604,8 +1679,9 @@ DEFUN(cfg_bts_stream_id,
 DEFUN(cfg_bts_hsl_oml,
       cfg_bts_hsl_oml_cmd,
       "oml hsl line E1_LINE",
-      OML_STR "HSL femto Specific Options"
-      "Set OML link of this HSL femto BTS\n")
+      OML_STR "HSL femto Specific Options\n"
+      "Set OML link of this HSL femto BTS\n"
+      "Virtual E1/T1 line number\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int linenr = atoi(argv[0]);
@@ -1620,13 +1696,23 @@ DEFUN(cfg_bts_hsl_oml,
 	return CMD_SUCCESS;
 }
 
-#define OML_E1_STR OML_STR "E1 Line\n"
+#define OML_E1_STR OML_STR "OML E1/T1 Configuration\n"
 
 DEFUN(cfg_bts_oml_e1,
       cfg_bts_oml_e1_cmd,
       "oml e1 line E1_LINE timeslot <1-31> sub-slot (0|1|2|3|full)",
 	OML_E1_STR
-      "E1 interface to be used for OML\n")
+      "E1/T1 line number to be used for OML\n"
+      "E1/T1 line number to be used for OML\n"
+      "E1/T1 timeslot to be used for OML\n"
+      "E1/T1 timeslot to be used for OML\n"
+      "E1/T1 sub-slot to be used for OML\n"
+      "Use E1/T1 sub-slot 0\n"
+      "Use E1/T1 sub-slot 1\n"
+      "Use E1/T1 sub-slot 2\n"
+      "Use E1/T1 sub-slot 3\n"
+      "Use full E1 slot 3\n"
+      )
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1640,7 +1726,8 @@ DEFUN(cfg_bts_oml_e1_tei,
       cfg_bts_oml_e1_tei_cmd,
       "oml e1 tei <0-63>",
 	OML_E1_STR
-      "Set the TEI to be used for OML")
+      "Set the TEI to be used for OML\n"
+      "TEI Number\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1671,7 +1758,9 @@ DEFUN(cfg_bts_rach_tx_integer,
       cfg_bts_rach_tx_integer_cmd,
       "rach tx integer <0-15>",
 	RACH_STR
-      "Set the raw tx integer value in RACH Control parameters IE")
+      "Set the raw tx integer value in RACH Control parameters IE\n"
+      "Set the raw tx integer value in RACH Control parameters IE\n"
+      "Raw tx integer value in RACH Control parameters IE\n")
 {
 	struct gsm_bts *bts = vty->index;
 	bts->si_common.rach_control.tx_integer = atoi(argv[0]) & 0xf;
@@ -1682,10 +1771,58 @@ DEFUN(cfg_bts_rach_max_trans,
       cfg_bts_rach_max_trans_cmd,
       "rach max transmission (1|2|4|7)",
 	RACH_STR
-      "Set the maximum number of RACH burst transmissions")
+      "Set the maximum number of RACH burst transmissions\n"
+      "Set the maximum number of RACH burst transmissions\n"
+      "Maximum number of 1 RACH burst transmissions\n"
+      "Maximum number of 2 RACH burst transmissions\n"
+      "Maximum number of 4 RACH burst transmissions\n"
+      "Maximum number of 7 RACH burst transmissions\n")
 {
 	struct gsm_bts *bts = vty->index;
 	bts->si_common.rach_control.max_trans = rach_max_trans_val2raw(atoi(argv[0]));
+	return CMD_SUCCESS;
+}
+
+#define CD_STR "Channel Description\n"
+
+DEFUN(cfg_bts_chan_desc_att,
+      cfg_bts_chan_desc_att_cmd,
+      "channel-descrption attach (0|1)",
+	CD_STR
+      "Set if attachment is required\n"
+      "Attachment is NOT required\n"
+      "Attachment is required (standard)\n")
+{
+	struct gsm_bts *bts = vty->index;
+	bts->si_common.chan_desc.att = atoi(argv[0]);
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_bts_chan_desc_bs_pa_mfrms,
+      cfg_bts_chan_desc_bs_pa_mfrms_cmd,
+      "channel-descrption bs-pa-mfrms <2-9>",
+	CD_STR
+      "Set number of multiframe periods for paging groups\n"
+      "Number of multiframe periods for paging groups\n")
+{
+	struct gsm_bts *bts = vty->index;
+	int bs_pa_mfrms = atoi(argv[0]);
+
+	bts->si_common.chan_desc.bs_pa_mfrms = bs_pa_mfrms - 2;
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_bts_chan_desc_bs_ag_blks_res,
+      cfg_bts_chan_desc_bs_ag_blks_res_cmd,
+      "channel-descrption bs-ag-blks-res <0-7>",
+	CD_STR
+      "Set number of blocks reserved for access grant\n"
+      "Number of blocks reserved for access grant\n")
+{
+	struct gsm_bts *bts = vty->index;
+	int bs_ag_blks_res = atoi(argv[0]);
+
+	bts->si_common.chan_desc.bs_ag_blks_res = bs_ag_blks_res;
 	return CMD_SUCCESS;
 }
 
@@ -1695,7 +1832,9 @@ DEFUN(cfg_bts_rach_nm_b_thresh,
       cfg_bts_rach_nm_b_thresh_cmd,
       "rach nm busy threshold <0-255>",
 	RACH_STR NM_STR
-      "Set the NM Busy Threshold in dB")
+      "Set the NM Busy Threshold\n"
+      "Set the NM Busy Threshold\n"
+      "NM Busy Threshold in dB")
 {
 	struct gsm_bts *bts = vty->index;
 	bts->rach_b_thresh = atoi(argv[0]);
@@ -1706,7 +1845,9 @@ DEFUN(cfg_bts_rach_nm_ldavg,
       cfg_bts_rach_nm_ldavg_cmd,
       "rach nm load average <0-65535>",
 	RACH_STR NM_STR
-      "Set the NM Loadaverage Slots value")
+      "Set the NM Loadaverage Slots value\n"
+      "Set the NM Loadaverage Slots value\n"
+      "NM Loadaverage Slots value\n")
 {
 	struct gsm_bts *bts = vty->index;
 	bts->rach_ldavg_slots = atoi(argv[0]);
@@ -1715,7 +1856,11 @@ DEFUN(cfg_bts_rach_nm_ldavg,
 
 DEFUN(cfg_bts_cell_barred, cfg_bts_cell_barred_cmd,
       "cell barred (0|1)",
-      "Should this cell be barred from access?")
+      "Should this cell be barred from access?\n"
+      "Should this cell be barred from access?\n"
+      "Cell should NOT be barred\n"
+      "Cell should be barred\n")
+
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1726,7 +1871,12 @@ DEFUN(cfg_bts_cell_barred, cfg_bts_cell_barred_cmd,
 
 DEFUN(cfg_bts_rach_ec_allowed, cfg_bts_rach_ec_allowed_cmd,
       "rach emergency call allowed (0|1)",
-      "Should this cell allow emergency calls?")
+      RACH_STR
+      "Should this cell allow emergency calls?\n"
+      "Should this cell allow emergency calls?\n"
+      "Should this cell allow emergency calls?\n"
+      "Do NOT allow emergency calls\n"
+      "Allow emergency calls\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1740,7 +1890,10 @@ DEFUN(cfg_bts_rach_ec_allowed, cfg_bts_rach_ec_allowed_cmd,
 
 DEFUN(cfg_bts_ms_max_power, cfg_bts_ms_max_power_cmd,
       "ms max power <0-40>",
-      "Maximum transmit power of the MS")
+      "MS Options\n"
+      "Maximum transmit power of the MS\n"
+      "Maximum transmit power of the MS\n"
+      "Maximum transmit power of the MS in dBm")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1749,8 +1902,12 @@ DEFUN(cfg_bts_ms_max_power, cfg_bts_ms_max_power_cmd,
 	return CMD_SUCCESS;
 }
 
+#define CELL_STR "Cell Parameters\n"
+
 DEFUN(cfg_bts_cell_resel_hyst, cfg_bts_cell_resel_hyst_cmd,
       "cell reselection hysteresis <0-14>",
+      CELL_STR "Cell re-selection parameters\n"
+      "Cell Re-Selection Hysteresis in dB\n"
       "Cell Re-Selection Hysteresis in dB")
 {
 	struct gsm_bts *bts = vty->index;
@@ -1762,6 +1919,9 @@ DEFUN(cfg_bts_cell_resel_hyst, cfg_bts_cell_resel_hyst_cmd,
 
 DEFUN(cfg_bts_rxlev_acc_min, cfg_bts_rxlev_acc_min_cmd,
       "rxlev access min <0-63>",
+      "Minimum RxLev needed for cell access\n"
+      "Minimum RxLev needed for cell access\n"
+      "Minimum RxLev needed for cell access\n"
       "Minimum RxLev needed for cell access (better than -110dBm)")
 {
 	struct gsm_bts *bts = vty->index;
@@ -1773,7 +1933,8 @@ DEFUN(cfg_bts_rxlev_acc_min, cfg_bts_rxlev_acc_min_cmd,
 
 DEFUN(cfg_bts_cell_bar_qualify, cfg_bts_cell_bar_qualify_cmd,
 	"cell bar qualify (0|1)",
-	"Cell Bar Qualify")
+	CELL_STR "Cell Bar Qualify\n" "Cell Bar Qualify\n"
+	"Set CBQ to 0\n" "Set CBQ to 1\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1785,7 +1946,10 @@ DEFUN(cfg_bts_cell_bar_qualify, cfg_bts_cell_bar_qualify_cmd,
 
 DEFUN(cfg_bts_cell_resel_ofs, cfg_bts_cell_resel_ofs_cmd,
 	"cell reselection offset <0-126>",
-	"Cell Re-Selection Offset in dB")
+	CELL_STR "Cell Re-Selection Parameters\n"
+	"Cell Re-Selection Offset (CRO) in dB\n"
+	"Cell Re-Selection Offset (CRO) in dB\n"
+	)
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1797,6 +1961,8 @@ DEFUN(cfg_bts_cell_resel_ofs, cfg_bts_cell_resel_ofs_cmd,
 
 DEFUN(cfg_bts_temp_ofs, cfg_bts_temp_ofs_cmd,
 	"temporary offset <0-60>",
+	"Cell selection temporary negative offset\n"
+	"Cell selection temporary negative offset\n"
 	"Cell selection temporary negative offset in dB")
 {
 	struct gsm_bts *bts = vty->index;
@@ -1809,6 +1975,8 @@ DEFUN(cfg_bts_temp_ofs, cfg_bts_temp_ofs_cmd,
 
 DEFUN(cfg_bts_temp_ofs_inf, cfg_bts_temp_ofs_inf_cmd,
 	"temporary offset infinite",
+	"Cell selection temporary negative offset\n"
+	"Cell selection temporary negative offset\n"
 	"Sets cell selection temporary negative offset to infinity")
 {
 	struct gsm_bts *bts = vty->index;
@@ -1821,7 +1989,9 @@ DEFUN(cfg_bts_temp_ofs_inf, cfg_bts_temp_ofs_inf_cmd,
 
 DEFUN(cfg_bts_penalty_time, cfg_bts_penalty_time_cmd,
 	"penalty time <20-620>",
-	"Cell selection penalty time in seconds (by 20s increments)")
+	"Cell selection penalty time\n"
+	"Cell selection penalty time\n"
+	"Cell selection penalty time in seconds (by 20s increments)\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1833,7 +2003,9 @@ DEFUN(cfg_bts_penalty_time, cfg_bts_penalty_time_cmd,
 
 DEFUN(cfg_bts_penalty_time_rsvd, cfg_bts_penalty_time_rsvd_cmd,
 	"penalty time reserved",
-	"Set cell selection penalty time to reserved value 31\n"
+	"Cell selection penalty time\n"
+	"Cell selection penalty time\n"
+	"Set cell selection penalty time to reserved value 31, "
 		"(indicate that CELL_RESELECT_OFFSET is subtracted from C2 "
 		"and TEMPORARY_OFFSET is ignored)")
 {
@@ -1847,7 +2019,10 @@ DEFUN(cfg_bts_penalty_time_rsvd, cfg_bts_penalty_time_rsvd_cmd,
 
 DEFUN(cfg_bts_per_loc_upd, cfg_bts_per_loc_upd_cmd,
       "periodic location update <0-1530>",
-      "Periodic Location Updating Interval in Minutes")
+      "Periodic Location Updating Interval\n"
+      "Periodic Location Updating Interval\n"
+      "Periodic Location Updating Interval\n"
+      "Periodic Location Updating Interval in Minutes\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -1862,6 +2037,7 @@ DEFUN(cfg_bts_prs_bvci, cfg_bts_gprs_bvci_cmd,
 	"gprs cell bvci <2-65535>",
 	GPRS_TEXT
 	"GPRS Cell Settings\n"
+	"GPRS BSSGP VC Identifier\n"
 	"GPRS BSSGP VC Identifier")
 {
 	struct gsm_bts *bts = vty->index;
@@ -1879,6 +2055,7 @@ DEFUN(cfg_bts_prs_bvci, cfg_bts_gprs_bvci_cmd,
 DEFUN(cfg_bts_gprs_nsei, cfg_bts_gprs_nsei_cmd,
 	"gprs nsei <0-65535>",
 	GPRS_TEXT
+	"GPRS NS Entity Identifier\n"
 	"GPRS NS Entity Identifier")
 {
 	struct gsm_bts *bts = vty->index;
@@ -1918,7 +2095,10 @@ DEFUN(cfg_bts_gprs_nsvci, cfg_bts_gprs_nsvci_cmd,
 DEFUN(cfg_bts_gprs_nsvc_lport, cfg_bts_gprs_nsvc_lport_cmd,
 	"gprs nsvc <0-1> local udp port <0-65535>",
 	GPRS_TEXT NSVC_TEXT
-	"GPRS NS Local UDP Port")
+	"GPRS NS Local UDP Port\n"
+	"GPRS NS Local UDP Port\n"
+	"GPRS NS Local UDP Port\n"
+	"GPRS NS Local UDP Port Number\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int idx = atoi(argv[0]);
@@ -1936,7 +2116,10 @@ DEFUN(cfg_bts_gprs_nsvc_lport, cfg_bts_gprs_nsvc_lport_cmd,
 DEFUN(cfg_bts_gprs_nsvc_rport, cfg_bts_gprs_nsvc_rport_cmd,
 	"gprs nsvc <0-1> remote udp port <0-65535>",
 	GPRS_TEXT NSVC_TEXT
-	"GPRS NS Remote UDP Port")
+	"GPRS NS Remote UDP Port\n"
+	"GPRS NS Remote UDP Port\n"
+	"GPRS NS Remote UDP Port\n"
+	"GPRS NS Remote UDP Port Number\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int idx = atoi(argv[0]);
@@ -1954,7 +2137,9 @@ DEFUN(cfg_bts_gprs_nsvc_rport, cfg_bts_gprs_nsvc_rport_cmd,
 DEFUN(cfg_bts_gprs_nsvc_rip, cfg_bts_gprs_nsvc_rip_cmd,
 	"gprs nsvc <0-1> remote ip A.B.C.D",
 	GPRS_TEXT NSVC_TEXT
-	"GPRS NS Remote IP Address")
+	"GPRS NS Remote IP Address\n"
+	"GPRS NS Remote IP Address\n"
+	"GPRS NS Remote IP Address\n")
 {
 	struct gsm_bts *bts = vty->index;
 	int idx = atoi(argv[0]);
@@ -1972,8 +2157,10 @@ DEFUN(cfg_bts_gprs_nsvc_rip, cfg_bts_gprs_nsvc_rip_cmd,
 }
 
 DEFUN(cfg_bts_pag_free, cfg_bts_pag_free_cmd,
-      "paging free FREE_NR",
-      "Only page when having a certain amount of free slots. -1 to disable")
+      "paging free <-1-1024>",
+      "Paging options\n"
+      "Only page when having a certain amount of free slots\n"
+      "amount of required free paging slots. -1 to disable\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -2044,7 +2231,9 @@ DEFUN(cfg_bts_gprs_cell_timer, cfg_bts_gprs_cell_timer_cmd,
 DEFUN(cfg_bts_gprs_rac, cfg_bts_gprs_rac_cmd,
 	"gprs routing area <0-255>",
 	GPRS_TEXT
-	"GPRS Routing Area Code")
+	"GPRS Routing Area Code\n"
+	"GPRS Routing Area Code\n"
+	"GPRS Routing Area Code\n")
 {
 	struct gsm_bts *bts = vty->index;
 
@@ -2200,7 +2389,7 @@ DEFUN(cfg_bts_neigh_mode, cfg_bts_neigh_mode_cmd,
 }
 
 DEFUN(cfg_bts_neigh, cfg_bts_neigh_cmd,
-	"neighbor-list (add|del) arfcn <0-1024>",
+	"neighbor-list (add|del) arfcn <0-1023>",
 	"Neighbor List\n" "Add to manual neighbor list\n"
 	"Delete from manual neighbor list\n" "ARFCN of neighbor\n"
 	"ARFCN of neighbor\n")
@@ -2224,7 +2413,8 @@ DEFUN(cfg_bts_neigh, cfg_bts_neigh_cmd,
 }
 
 DEFUN(cfg_bts_si5_neigh, cfg_bts_si5_neigh_cmd,
-	"si5 neighbor-list (add|del) arfcn <0-1024>",
+	"si5 neighbor-list (add|del) arfcn <0-1023>",
+	"SI5 Neighbor List\n"
 	"SI5 Neighbor List\n" "Add to manual SI5 neighbor list\n"
 	"Delete from SI5 manual neighbor list\n" "ARFCN of neighbor\n"
 	"ARFCN of neighbor\n")
@@ -2252,7 +2442,7 @@ DEFUN(cfg_bts_si5_neigh, cfg_bts_si5_neigh_cmd,
 /* per TRX configuration */
 DEFUN(cfg_trx,
       cfg_trx_cmd,
-      "trx TRX_NR",
+      "trx <0-255>",
 	TRX_TEXT
       "Select a TRX to configure")
 {
@@ -2282,8 +2472,9 @@ DEFUN(cfg_trx,
 
 DEFUN(cfg_trx_arfcn,
       cfg_trx_arfcn_cmd,
-      "arfcn <0-1024>",
-      "Set the ARFCN for this TRX\n")
+      "arfcn <0-1023>",
+      "Set the ARFCN for this TRX\n"
+      "Absolute Radio Frequency Channel Number\n")
 {
 	int arfcn = atoi(argv[0]);
 	struct gsm_bts_trx *trx = vty->index;
@@ -2302,7 +2493,9 @@ DEFUN(cfg_trx_arfcn,
 DEFUN(cfg_trx_nominal_power,
       cfg_trx_nominal_power_cmd,
       "nominal power <0-100>",
-      "Nominal TRX RF Power in dB\n")
+      "Nominal TRX RF Power in dBm\n"
+      "Nominal TRX RF Power in dBm\n"
+      "Nominal TRX RF Power in dBm\n")
 {
 	struct gsm_bts_trx *trx = vty->index;
 
@@ -2314,6 +2507,7 @@ DEFUN(cfg_trx_nominal_power,
 DEFUN(cfg_trx_max_power_red,
       cfg_trx_max_power_red_cmd,
       "max_power_red <0-100>",
+      "Reduction of maximum BS RF Power (relative to nominal power)\n"
       "Reduction of maximum BS RF Power in dB\n")
 {
 	int maxpwr_r = atoi(argv[0]);
@@ -2342,7 +2536,18 @@ DEFUN(cfg_trx_max_power_red,
 DEFUN(cfg_trx_rsl_e1,
       cfg_trx_rsl_e1_cmd,
       "rsl e1 line E1_LINE timeslot <1-31> sub-slot (0|1|2|3|full)",
-      "E1 interface to be used for RSL\n")
+      "RSL Parameters\n"
+      "E1/T1 interface to be used for RSL\n"
+      "E1/T1 interface to be used for RSL\n"
+      "E1/T1 Line Number to be used for RSL\n"
+      "E1/T1 Timeslot to be used for RSL\n"
+      "E1/T1 Timeslot to be used for RSL\n"
+      "E1/T1 Sub-slot to be used for RSL\n"
+      "E1/T1 Sub-slot 0 is to be used for RSL\n"
+      "E1/T1 Sub-slot 1 is to be used for RSL\n"
+      "E1/T1 Sub-slot 2 is to be used for RSL\n"
+      "E1/T1 Sub-slot 3 is to be used for RSL\n"
+      "E1/T1 full timeslot is to be used for RSL\n")
 {
 	struct gsm_bts_trx *trx = vty->index;
 
@@ -2354,7 +2559,10 @@ DEFUN(cfg_trx_rsl_e1,
 DEFUN(cfg_trx_rsl_e1_tei,
       cfg_trx_rsl_e1_tei_cmd,
       "rsl e1 tei <0-63>",
-      "Set the TEI to be used for RSL")
+      "RSL Parameters\n"
+      "Set the TEI to be used for RSL\n"
+      "Set the TEI to be used for RSL\n"
+      "TEI to be used for RSL\n")
 {
 	struct gsm_bts_trx *trx = vty->index;
 
@@ -2366,7 +2574,9 @@ DEFUN(cfg_trx_rsl_e1_tei,
 DEFUN(cfg_trx_rf_locked,
       cfg_trx_rf_locked_cmd,
       "rf_locked (0|1)",
-      "Turn off RF of the TRX.\n")
+      "Set or unset the RF Locking (Turn off RF of the TRX)\n"
+      "TRX is NOT RF locked (active)\n"
+      "TRX is RF locked (turned off)\n")
 {
 	int locked = atoi(argv[0]);
 	struct gsm_bts_trx *trx = vty->index;
@@ -2379,7 +2589,8 @@ DEFUN(cfg_trx_rf_locked,
 DEFUN(cfg_ts,
       cfg_ts_cmd,
       "timeslot <0-7>",
-      "Select a Timeslot to configure")
+      "Select a Timeslot to configure\n"
+      "Timeslot number\n")
 {
 	int ts_nr = atoi(argv[0]);
 	struct gsm_bts_trx *trx = vty->index;
@@ -2401,6 +2612,25 @@ DEFUN(cfg_ts,
 
 DEFUN(cfg_ts_pchan,
       cfg_ts_pchan_cmd,
+      "phys_chan_config PCHAN", /* dynamically generated! */
+      "Physical Channel configuration (TCH/SDCCH/...)")
+{
+	struct gsm_bts_trx_ts *ts = vty->index;
+	int pchanc;
+
+	pchanc = gsm_pchan_parse(argv[0]);
+	if (pchanc < 0)
+		return CMD_WARNING;
+
+	ts->pchan = pchanc;
+
+	return CMD_SUCCESS;
+}
+
+/* used for backwards compatibility with old config files that still
+ * have uppercase pchan type names */
+DEFUN_HIDDEN(cfg_ts_pchan_compat,
+      cfg_ts_pchan_compat_cmd,
       "phys_chan_config PCHAN",
       "Physical Channel configuration (TCH/SDCCH/...)")
 {
@@ -2416,10 +2646,12 @@ DEFUN(cfg_ts_pchan,
 	return CMD_SUCCESS;
 }
 
+
+
 DEFUN(cfg_ts_tsc,
       cfg_ts_tsc_cmd,
       "training_sequence_code <0-7>",
-      "Training Sequence Code")
+      "Training Sequence Code of the Timeslot\n" "TSC\n")
 {
 	struct gsm_bts_trx_ts *ts = vty->index;
 
@@ -2454,7 +2686,8 @@ DEFUN(cfg_ts_hsn,
       cfg_ts_hsn_cmd,
       "hopping sequence-number <0-63>",
 	HOPPING_STR
-      "Which hopping sequence to use for this channel")
+      "Which hopping sequence to use for this channel\n"
+      "Hopping Sequence Number (HSN)\n")
 {
 	struct gsm_bts_trx_ts *ts = vty->index;
 
@@ -2467,7 +2700,8 @@ DEFUN(cfg_ts_maio,
       cfg_ts_maio_cmd,
       "hopping maio <0-63>",
 	HOPPING_STR
-      "Which hopping MAIO to use for this channel")
+      "Which hopping MAIO to use for this channel\n"
+      "Mobile Allocation Index Offset (MAIO)\n")
 {
 	struct gsm_bts_trx_ts *ts = vty->index;
 
@@ -2507,7 +2741,17 @@ DEFUN(cfg_ts_arfcn_del,
 DEFUN(cfg_ts_e1_subslot,
       cfg_ts_e1_subslot_cmd,
       "e1 line E1_LINE timeslot <1-31> sub-slot (0|1|2|3|full)",
-      "E1 sub-slot connected to this on-air timeslot")
+      "E1/T1 channel connected to this on-air timeslot\n"
+      "E1/T1 channel connected to this on-air timeslot\n"
+      "E1/T1 line connected to this on-air timeslot\n"
+      "E1/T1 timeslot connected to this on-air timeslot\n"
+      "E1/T1 timeslot connected to this on-air timeslot\n"
+      "E1/T1 sub-slot connected to this on-air timeslot\n"
+      "E1/T1 sub-slot 0 connected to this on-air timeslot\n"
+      "E1/T1 sub-slot 1 connected to this on-air timeslot\n"
+      "E1/T1 sub-slot 2 connected to this on-air timeslot\n"
+      "E1/T1 sub-slot 3 connected to this on-air timeslot\n"
+      "Full E1/T1 timeslot connected to this on-air timeslot\n")
 {
 	struct gsm_bts_trx_ts *ts = vty->index;
 
@@ -2552,8 +2796,10 @@ DEFUN(logging_fltr_imsi,
 DEFUN(drop_bts,
       drop_bts_cmd,
       "drop bts connection <0-65535> (oml|rsl)",
-      "Debug/Simulation command to drop ipaccess BTS\n"
-      "BTS NR\n" "Connection Type\n")
+      "Debug/Simulation command to drop Abis/IP BTS\n"
+      "Debug/Simulation command to drop Abis/IP BTS\n"
+      "Debug/Simulation command to drop Abis/IP BTS\n"
+      "BTS NR\n" "Drop OML Connection\n" "Drop RSL Connection\n")
 {
 	struct gsm_network *gsmnet;
 	struct gsm_bts_trx *trx;
@@ -2653,6 +2899,29 @@ extern const char *openbsc_copyright;
 
 int bsc_vty_init(const struct log_info *cat)
 {
+	cfg_ts_pchan_cmd.string =
+		vty_cmd_string_from_valstr(tall_bsc_ctx,
+					   gsm_pchant_names,
+					   "phys_chan_config (", "|", ")",
+					   VTY_DO_LOWER);
+	cfg_ts_pchan_cmd.doc =
+		vty_cmd_string_from_valstr(tall_bsc_ctx,
+					   gsm_pchant_descs,
+					   "Physical Channel Combination\n",
+					   "\n", "", 0);
+
+	cfg_bts_type_cmd.string =
+		vty_cmd_string_from_valstr(tall_bsc_ctx,
+					   bts_type_names,
+					   "type (", "|", ")",
+					   VTY_DO_LOWER);
+	cfg_bts_type_cmd.doc =
+		vty_cmd_string_from_valstr(tall_bsc_ctx,
+					   bts_type_descs,
+					   "BTS Vendor/Type\n",
+					   "\n", "", 0);
+
+
 	install_element_ve(&show_net_cmd);
 	install_element_ve(&show_bts_cmd);
 	install_element_ve(&show_trx_cmd);
@@ -2729,6 +2998,9 @@ int bsc_vty_init(const struct log_info *cat)
 	install_element(BTS_NODE, &cfg_bts_challoc_cmd);
 	install_element(BTS_NODE, &cfg_bts_rach_tx_integer_cmd);
 	install_element(BTS_NODE, &cfg_bts_rach_max_trans_cmd);
+	install_element(BTS_NODE, &cfg_bts_chan_desc_att_cmd);
+	install_element(BTS_NODE, &cfg_bts_chan_desc_bs_pa_mfrms_cmd);
+	install_element(BTS_NODE, &cfg_bts_chan_desc_bs_ag_blks_res_cmd);
 	install_element(BTS_NODE, &cfg_bts_rach_nm_b_thresh_cmd);
 	install_element(BTS_NODE, &cfg_bts_rach_nm_ldavg_cmd);
 	install_element(BTS_NODE, &cfg_bts_cell_barred_cmd);
@@ -2780,6 +3052,7 @@ int bsc_vty_init(const struct log_info *cat)
 	install_element(TS_NODE, &ournode_exit_cmd);
 	install_element(TS_NODE, &ournode_end_cmd);
 	install_element(TS_NODE, &cfg_ts_pchan_cmd);
+	install_element(TS_NODE, &cfg_ts_pchan_compat_cmd);
 	install_element(TS_NODE, &cfg_ts_tsc_cmd);
 	install_element(TS_NODE, &cfg_ts_hopping_cmd);
 	install_element(TS_NODE, &cfg_ts_hsn_cmd);

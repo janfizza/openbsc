@@ -1019,3 +1019,7 @@ int main(int argc, char **argv)
 	exit(0);
 }
 
+int tch_frame_down(struct gsm_network *net, uint32_t callref, struct gsm_data_frame *data)
+{
+	return -ENOTSUP;
+}

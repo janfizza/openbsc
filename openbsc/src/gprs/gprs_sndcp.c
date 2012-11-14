@@ -27,10 +27,10 @@
 #include <osmocom/core/linuxlist.h>
 #include <osmocom/core/timer.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/gprs/gprs_bssgp.h>
 
 #include <openbsc/gsm_data.h>
 #include <openbsc/debug.h>
-#include <openbsc/gprs_bssgp.h>
 #include <openbsc/gprs_llc.h>
 #include <openbsc/sgsn.h>
 
@@ -162,7 +162,7 @@ static int defrag_segments(struct gprs_sndcp_entity *sne)
 		dqe = defrag_get_seg(sne, seg_nr);
 		if (!dqe) {
 			LOGP(DSNDCP, LOGL_ERROR, "Segment %u missing\n", seg_nr);
-			talloc_free(msg);
+			msgb_free(msg);
 			return -EIO;
 		}
 		/* actually append the segment to the N-PDU */

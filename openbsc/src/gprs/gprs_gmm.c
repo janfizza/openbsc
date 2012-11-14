@@ -38,6 +38,8 @@
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/rate_ctr.h>
 
+#include <osmocom/gprs/gprs_bssgp.h>
+
 #include <openbsc/debug.h>
 #include <openbsc/gsm_data.h>
 #include <openbsc/gsm_subscriber.h>
@@ -45,7 +47,6 @@
 #include <openbsc/gsm_04_08_gprs.h>
 #include <openbsc/paging.h>
 #include <openbsc/transaction.h>
-#include <openbsc/gprs_bssgp.h>
 #include <openbsc/gprs_llc.h>
 #include <openbsc/gprs_sgsn.h>
 #include <openbsc/gprs_gmm.h>
@@ -603,6 +604,9 @@ static int gsm48_rx_gmm_id_resp(struct sgsn_mm_ctx *ctx, struct msgb *msg)
 					ictx->p_tmsi, ctx->p_tmsi);
 				gprs_llgmm_assign(ictx->llme, ictx->tlli,
 						  0xffffffff, GPRS_ALGO_GEA0, NULL);
+				/* FIXME: this is a hard free, we don't
+				 * clean-up any PDP contexts on the
+				 * libgtp side */
 				sgsn_mm_ctx_free(ictx);
 			}
 		}

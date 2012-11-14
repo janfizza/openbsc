@@ -71,4 +71,7 @@ void gsm48_lchan2chan_desc(struct gsm48_chan_desc *cd,
 			   const struct gsm_lchan *lchan);
 
 int tch_frame_down(struct gsm_network *net, uint32_t callref, struct gsm_data_frame *data);
+void release_security_operation(struct gsm_subscriber_connection *conn);
+void allocate_security_operation(struct gsm_subscriber_connection *conn);
+
 #endif

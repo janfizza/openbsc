@@ -38,6 +38,9 @@
 #include <osmocom/core/rate_ctr.h>
 #include <osmocom/core/logging.h>
 
+#include <osmocom/gprs/gprs_ns.h>
+#include <osmocom/gprs/gprs_bssgp.h>
+
 #include <osmocom/vty/telnet_interface.h>
 #include <osmocom/vty/logging.h>
 
@@ -45,9 +48,8 @@
 #include <openbsc/debug.h>
 #include <openbsc/vty.h>
 #include <openbsc/sgsn.h>
-#include <openbsc/gprs_ns.h>
-#include <openbsc/gprs_bssgp.h>
 #include <openbsc/gprs_llc.h>
+#include <openbsc/gprs_gmm.h>
 
 #include <gtp.h>
 
@@ -86,16 +88,44 @@ static int sgsn_ns_cb(enum gprs_ns_evt event, struct gprs_nsvc *nsvc,
 	switch (event) {
 	case GPRS_NS_EVT_UNIT_DATA:
 		/* hand the message into the BSSGP implementation */
-		rc = gprs_bssgp_rcvmsg(msg);
+		rc = bssgp_rcvmsg(msg);
 		break;
 	default:
 		LOGP(DGPRS, LOGL_ERROR, "SGSN: Unknown event %u from NS\n", event);
 		if (msg)
-			talloc_free(msg);
+			msgb_free(msg);
 		rc = -EIO;
 		break;
 	}
 	return rc;
+}
+
+/* call-back function for the BSSGP protocol */
+int bssgp_prim_cb(struct osmo_prim_hdr *oph, void *ctx)
+{
+	struct osmo_bssgp_prim *bp;
+	bp = container_of(oph, struct osmo_bssgp_prim, oph);
+
+	switch (oph->sap) {
+	case SAP_BSSGP_LL:
+		switch (oph->primitive) {
+		case PRIM_BSSGP_UL_UD:
+			return gprs_llc_rcvmsg(oph->msg, bp->tp);
+		}
+		break;
+	case SAP_BSSGP_GMM:
+		switch (oph->primitive) {
+		case PRIM_BSSGP_GMM_SUSPEND:
+			return gprs_gmm_rx_suspend(bp->ra_id, bp->tlli);
+		case PRIM_BSSGP_GMM_RESUME:
+			return gprs_gmm_rx_resume(bp->ra_id, bp->tlli,
+						  bp->u.resume.suspend_ref);
+		}
+		break;
+	case SAP_BSSGP_NM:
+		break;
+	}
+	return 0;
 }
 
 static void signal_handler(int signal)
@@ -197,6 +227,70 @@ static void handle_options(int argc, char **argv)
 	}
 }
 
+/* default categories */
+static struct log_info_cat gprs_categories[] = {
+	[DMM] = {
+		.name = "DMM",
+		.description = "Layer3 Mobility Management (MM)",
+		.color = "\033[1;33m",
+		.enabled = 1, .loglevel = LOGL_NOTICE,
+	},
+	[DSMS] = {
+		.name = "DSMS",
+		.description = "Layer3 Short Message Service (SMS)",
+		.color = "\033[1;37m",
+		.enabled = 1, .loglevel = LOGL_NOTICE,
+	},
+	[DPAG]	= {
+		.name = "DPAG",
+		.description = "Paging Subsystem",
+		.color = "\033[1;38m",
+		.enabled = 1, .loglevel = LOGL_NOTICE,
+	},
+	[DMEAS] = {
+		.name = "DMEAS",
+		.description = "Radio Measurement Processing",
+		.enabled = 0, .loglevel = LOGL_NOTICE,
+	},
+	[DREF] = {
+		.name = "DREF",
+		.description = "Reference Counting",
+		.enabled = 0, .loglevel = LOGL_NOTICE,
+	},
+	[DGPRS] = {
+		.name = "DGPRS",
+		.description = "GPRS Packet Service",
+		.enabled = 1, .loglevel = LOGL_DEBUG,
+	},
+	[DNS] = {
+		.name = "DNS",
+		.description = "GPRS Network Service (NS)",
+		.enabled = 1, .loglevel = LOGL_INFO,
+	},
+	[DBSSGP] = {
+		.name = "DBSSGP",
+		.description = "GPRS BSS Gateway Protocol (BSSGP)",
+		.enabled = 1, .loglevel = LOGL_DEBUG,
+	},
+	[DLLC] = {
+		.name = "DLLC",
+		.description = "GPRS Logical Link Control Protocol (LLC)",
+		.enabled = 1, .loglevel = LOGL_DEBUG,
+	},
+	[DSNDCP] = {
+		.name = "DSNDCP",
+		.description = "GPRS Sub-Network Dependent Control Protocol (SNDCP)",
+		.enabled = 1, .loglevel = LOGL_DEBUG,
+	},
+};
+
+static const struct log_info gprs_log_info = {
+	.filter_fn = gprs_log_filter_fn,
+	.cat = gprs_categories,
+	.num_cat = ARRAY_SIZE(gprs_categories),
+};
+
+
 int main(int argc, char **argv)
 {
 	struct gsm_network dummy_network;
@@ -211,11 +305,11 @@ int main(int argc, char **argv)
 	signal(SIGUSR2, &signal_handler);
 
 	osmo_init_ignore_signals();
-	osmo_init_logging(&log_info);
+	osmo_init_logging(&gprs_log_info);
 
 	vty_info.copyright = openbsc_copyright;
 	vty_init(&vty_info);
-	logging_vty_add_cmds(&log_info);
+	logging_vty_add_cmds(&gprs_log_info);
         sgsn_vty_init();
 
 	handle_options(argc, argv);
@@ -225,7 +319,10 @@ int main(int argc, char **argv)
 	if (rc < 0)
 		exit(1);
 
-	sgsn_nsi = gprs_ns_instantiate(&sgsn_ns_cb);
+	gprs_ns_set_log_ss(DNS);
+	bssgp_set_log_ss(DBSSGP);
+
+	sgsn_nsi = gprs_ns_instantiate(&sgsn_ns_cb, tall_bsc_ctx);
 	if (!sgsn_nsi) {
 		LOGP(DGPRS, LOGL_ERROR, "Unable to instantiate NS\n");
 		exit(1);
@@ -235,10 +332,10 @@ int main(int argc, char **argv)
 	gprs_llc_init("/usr/local/lib/osmocom/crypt/");
 
 	gprs_ns_vty_init(bssgp_nsi);
-	gprs_bssgp_vty_init();
+	bssgp_vty_init();
 	gprs_llc_vty_init();
 	gprs_sndcp_vty_init();
-	/* FIXME: register signal handler for SS_NS */
+	/* FIXME: register signal handler for SS_L_NS */
 
 	rc = sgsn_parse_config(sgsn_inst.config_file, &sgsn_inst.cfg);
 	if (rc < 0) {

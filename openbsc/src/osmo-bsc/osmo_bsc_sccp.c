@@ -1,7 +1,7 @@
 /* Interaction with the SCCP subsystem */
 /*
- * (C) 2009-2010 by Holger Hans Peter Freyther <zecke@selfish.org>
- * (C) 2009-2010 by On-Waves
+ * (C) 2009-2011 by Holger Hans Peter Freyther <zecke@selfish.org>
+ * (C) 2009-2011 by On-Waves
  * All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify
@@ -140,8 +140,16 @@ static void sccp_cc_timeout(void *_data)
 static void msc_sccp_write_ipa(struct sccp_connection *conn, struct msgb *msg,
 			      void *global_ctx, void *ctx)
 {
-	struct gsm_network *net = (struct gsm_network *) global_ctx;
-	msc_queue_write(net->msc_data->msc_con, msg, IPAC_PROTO_SCCP);
+	struct bsc_msc_connection *msc_con;
+
+	if (conn) {
+		struct osmo_bsc_sccp_con *bsc_con = conn->data_ctx;
+		msc_con = bsc_con->msc->msc_con;
+	} else {
+		msc_con = ctx;
+	}
+
+	msc_queue_write(msc_con, msg, IPAC_PROTO_SCCP);
 }
 
 static int msc_sccp_accept(struct sccp_connection *connection, void *data)
@@ -152,8 +160,8 @@ static int msc_sccp_accept(struct sccp_connection *connection, void *data)
 
 static int msc_sccp_read(struct msgb *msgb, unsigned int length, void *data)
 {
-	struct gsm_network *net = (struct gsm_network *) data;
-	return bsc_handle_udt(net, net->msc_data->msc_con, msgb, length);
+	struct osmo_msc_data *msc = (struct osmo_msc_data *) msgb->cb[0];
+	return bsc_handle_udt(msc, msgb, length);
 }
 
 int bsc_queue_for_msc(struct osmo_bsc_sccp_con *conn, struct msgb *msg)
@@ -179,15 +187,19 @@ int bsc_queue_for_msc(struct osmo_bsc_sccp_con *conn, struct msgb *msg)
 	return 0;
 }
 
-int bsc_create_new_connection(struct gsm_subscriber_connection *conn)
+int bsc_create_new_connection(struct gsm_subscriber_connection *conn,
+			      struct osmo_msc_data *msc)
 {
 	struct gsm_network *net;
 	struct osmo_bsc_sccp_con *bsc_con;
 	struct sccp_connection *sccp;
 
 	net = conn->bts->network;
-	if (!net->msc_data->msc_con->is_authenticated) {
-		LOGP(DMSC, LOGL_ERROR, "Not connected to a MSC. Not forwarding data.\n");
+
+	/* This should not trigger */
+	if (!msc->msc_con->is_authenticated) {
+		LOGP(DMSC, LOGL_ERROR,
+		     "How did this happen? MSC is not connected. Dropping.\n");
 		return -1;
 	}
 
@@ -223,7 +235,7 @@ int bsc_create_new_connection(struct gsm_subscriber_connection *conn)
 	INIT_LLIST_HEAD(&bsc_con->sccp_queue);
 
 	bsc_con->sccp = sccp;
-	bsc_con->msc_con = net->msc_data->msc_con;
+	bsc_con->msc = msc;
 	bsc_con->conn = conn;
 	llist_add_tail(&bsc_con->entry, &active_connections);
 	conn->sccp_con = bsc_con;
@@ -257,8 +269,10 @@ static void bsc_close_connections(struct bsc_msc_connection *msc_con)
 {
 	struct osmo_bsc_sccp_con *con, *tmp;
 
-	llist_for_each_entry_safe(con, tmp, &active_connections, entry)
-		bsc_sccp_force_free(con);
+	llist_for_each_entry_safe(con, tmp, &active_connections, entry) {
+		if (con->msc->msc_con == msc_con)
+			bsc_sccp_force_free(con);
+	}
 }
 
 static int handle_msc_signal(unsigned int subsys, unsigned int signal,

@@ -114,6 +114,8 @@ struct mgcp_trunk_config {
 	int audio_payload;
 	int audio_loop;
 
+	int omit_rtcp;
+
 	/* spec handling */
 	int force_realloc;
 
@@ -166,6 +168,7 @@ int mgcp_vty_init(void);
 int mgcp_endpoints_allocate(struct mgcp_trunk_config *cfg);
 void mgcp_free_endp(struct mgcp_endpoint *endp);
 int mgcp_reset_transcoder(struct mgcp_config *cfg);
+void mgcp_format_stats(struct mgcp_endpoint *endp, char *stats, size_t size);
 
 /*
  * format helper functions
@@ -189,6 +192,9 @@ static inline void mgcp_endpoint_to_timeslot(int endpoint, int *multiplex, int *
 	*multiplex = endpoint / 32;
 	*timeslot = endpoint % 32;
 }
+
+int mgcp_send_reset_ep(struct mgcp_endpoint *endp, int endpoint);
+int mgcp_send_reset_all(struct mgcp_config *cfg);
 
 
 #endif

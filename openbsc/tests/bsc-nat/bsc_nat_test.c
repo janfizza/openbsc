@@ -264,6 +264,27 @@ static void copy_to_msg(struct msgb *msg, const uint8_t *data, unsigned int leng
 	memcpy(msg->l2h, data, msgb_l2len(msg));
 }
 
+static void verify_msg(struct msgb *out, const uint8_t *ref, int ref_len)
+{
+	if (out->len != ref_len) {
+		printf("FAIL: The size should match: %d vs. %d\n",
+			out->len, ref_len);
+		printf("%s\n", osmo_hexdump(out->data, out->len));
+		printf("Wanted\n");
+		printf("%s\n", osmo_hexdump(ref, ref_len));
+		abort();
+	}
+
+	if (memcmp(out->data, ref, out->len) != 0) {
+		printf("FAIL: the data should be changed.\n");
+		printf("%s\n", osmo_hexdump(out->data, out->len));
+		printf("Wanted\n");
+		printf("%s\n", osmo_hexdump(ref, ref_len));
+		abort();
+	}
+}
+
+
 #define VERIFY(con_found, con, msg, ver, str) \
 	if (!con_found) {						\
 		printf("Failed to find connection.\n");			\
@@ -888,15 +909,7 @@ static void test_setup_rewrite()
 		abort();
 	}
 
-	if (out->len != ARRAY_SIZE(cc_setup_international)) {
-		printf("FAIL: Length of message changed\n");
-		abort();
-	}
-
-	if (memcmp(out->data, cc_setup_international, out->len) != 0) {
-		printf("FAIL: Content modified..\n");
-		abort();
-	}
+	verify_msg(out, cc_setup_international, ARRAY_SIZE(cc_setup_international));
 	talloc_free(parsed);
 
 	/* verify that something in the message changes */
@@ -919,17 +932,7 @@ static void test_setup_rewrite()
 		abort();
 	}
 
-	if (out->len != ARRAY_SIZE(cc_setup_national_patched)) {
-		printf("FAIL: Length is wrong.\n");
-		abort();
-	}
-
-	if (memcmp(cc_setup_national_patched, out->data, out->len) != 0) {
-		printf("FAIL: Data is wrong.\n");
-		printf("Data was: %s\n", osmo_hexdump(out->data, out->len));
-		abort();
-	}
-
+	verify_msg(out, cc_setup_national_patched, ARRAY_SIZE(cc_setup_national_patched));
 	msgb_free(out);
 
 	/* Make sure that a wildcard is matching */
@@ -954,17 +957,7 @@ static void test_setup_rewrite()
 		abort();
 	}
 
-	if (out->len != ARRAY_SIZE(cc_setup_national_patched)) {
-		printf("FAIL: Length is wrong.\n");
-		abort();
-	}
-
-	if (memcmp(cc_setup_national_patched, out->data, out->len) != 0) {
-		printf("FAIL: Data is wrong.\n");
-		printf("Data was: %s\n", osmo_hexdump(out->data, out->len));
-		abort();
-	}
-
+	verify_msg(out, cc_setup_national_patched, ARRAY_SIZE(cc_setup_national_patched));
 	msgb_free(out);
 
 	/* Make sure that a wildcard is matching */
@@ -984,20 +977,11 @@ static void test_setup_rewrite()
 		abort();
 	}
 
-	if (out->len != ARRAY_SIZE(cc_setup_national)) {
-		printf("FAIL: Foo\n");
-		abort();
-	}
-
-	if (memcmp(out->data, cc_setup_national, ARRAY_SIZE(cc_setup_national)) != 0) {
-		printf("FAIL: The message should really be unchanged.\n");
-		abort();
-	}
-
+	verify_msg(out, cc_setup_national, ARRAY_SIZE(cc_setup_national));
 	msgb_free(out);
 }
 
-static void test_smsc_rewrite()
+static void test_sms_smsc_rewrite()
 {
 	struct msgb *msg = msgb_alloc(4096, "SMSC rewrite"), *out;
 	struct bsc_nat_parsed *parsed;
@@ -1006,11 +990,12 @@ static void test_smsc_rewrite()
 	struct bsc_nat *nat = bsc_nat_alloc();
 
 	/* a fake list */
-	struct osmo_config_list smsc_entries, dest_entries;
-	struct osmo_config_entry smsc_entry, dest_entry;
+	struct osmo_config_list smsc_entries, dest_entries, clear_entries;
+	struct osmo_config_entry smsc_entry, dest_entry, clear_entry;
 
 	INIT_LLIST_HEAD(&smsc_entries.entry);
 	INIT_LLIST_HEAD(&dest_entries.entry);
+	INIT_LLIST_HEAD(&clear_entries.entry);
 	smsc_entry.mcc = "^515039";
 	smsc_entry.option = "639180000105()";
 	smsc_entry.text   = "6666666666667";
@@ -1020,10 +1005,20 @@ static void test_smsc_rewrite()
 	dest_entry.option = "^0049";
 	dest_entry.text   = "";
 	llist_add_tail(&dest_entry.list, &dest_entries.entry);
+	clear_entry.mcc = "^515039";
+	clear_entry.option = "^0049";
+	clear_entry.text   = "";
+	llist_add_tail(&clear_entry.list, &clear_entries.entry);
 
 	bsc_nat_num_rewr_entry_adapt(nat, &nat->smsc_rewr, &smsc_entries);
 	bsc_nat_num_rewr_entry_adapt(nat, &nat->tpdest_match, &dest_entries);
+	bsc_nat_num_rewr_entry_adapt(nat, &nat->sms_clear_tp_srr, &clear_entries);
 
+	printf("Testing SMSC rewriting.\n");
+
+	/*
+	 * Check if the SMSC address is changed
+	 */
 	copy_to_msg(msg, smsc_rewrite, ARRAY_SIZE(smsc_rewrite));
 	parsed = bsc_nat_parse(msg);
 	if (!parsed) {
@@ -1037,15 +1032,120 @@ static void test_smsc_rewrite()
 		abort();
 	}
 
-	if (out->len != ARRAY_SIZE(smsc_rewrite_patched)) {
-		printf("FAIL: The size should match.\n");
+	verify_msg(out, smsc_rewrite_patched, ARRAY_SIZE(smsc_rewrite_patched));
+	msgb_free(out);
+
+	/* clear out the filter for SMSC */
+	printf("Attempting to only rewrite the HDR\n");
+	bsc_nat_num_rewr_entry_adapt(nat, &nat->smsc_rewr, NULL);
+	msg = msgb_alloc(4096, "SMSC rewrite");
+	copy_to_msg(msg, smsc_rewrite, ARRAY_SIZE(smsc_rewrite));
+	parsed = bsc_nat_parse(msg);
+	if (!parsed) {
+		printf("FAIL: Could not parse SMS\n");
 		abort();
 	}
 
-	if (memcmp(out->data, smsc_rewrite_patched, out->len) != 0) {
-		printf("FAIL: the data should be changed.\n");
+	out = bsc_nat_rewrite_msg(nat, msg, parsed, imsi);
+	if (out == msg) {
+		printf("FAIL: This should have changed.\n");
 		abort();
 	}
+
+	verify_msg(out, smsc_rewrite_patched_hdr, ARRAY_SIZE(smsc_rewrite_patched_hdr));
+	msgb_free(out);
+
+	/* clear out the next filter */
+	printf("Attempting to change nothing.\n");
+	bsc_nat_num_rewr_entry_adapt(nat, &nat->sms_clear_tp_srr, NULL);
+	msg = msgb_alloc(4096, "SMSC rewrite");
+	copy_to_msg(msg, smsc_rewrite, ARRAY_SIZE(smsc_rewrite));
+	parsed = bsc_nat_parse(msg);
+	if (!parsed) {
+		printf("FAIL: Could not parse SMS\n");
+		abort();
+	}
+
+	out = bsc_nat_rewrite_msg(nat, msg, parsed, imsi);
+	if (out != msg) {
+		printf("FAIL: This should not have changed.\n");
+		abort();
+	}
+
+	verify_msg(out, smsc_rewrite, ARRAY_SIZE(smsc_rewrite));
+	msgb_free(out);
+}
+
+static void test_sms_number_rewrite(void)
+{
+	struct msgb *msg, *out;
+	struct bsc_nat_parsed *parsed;
+	const char *imsi = "515039900406700";
+
+	struct bsc_nat *nat = bsc_nat_alloc();
+
+	/* a fake list */
+	struct osmo_config_list num_entries, clear_entries;
+	struct osmo_config_entry num_entry, clear_entry;
+
+	INIT_LLIST_HEAD(&num_entries.entry);
+	num_entry.mcc = "^515039";
+	num_entry.option = "^0049()";
+	num_entry.text   = "0032";
+	llist_add_tail(&num_entry.list, &num_entries.entry);
+
+	bsc_nat_num_rewr_entry_adapt(nat, &nat->sms_num_rewr, &num_entries);
+
+	printf("Testing SMS TP-DA rewriting.\n");
+
+	/*
+	 * Check if the SMSC address is changed
+	 */
+ 	msg = msgb_alloc(4096, "SMSC rewrite");
+	copy_to_msg(msg, smsc_rewrite, ARRAY_SIZE(smsc_rewrite));
+	parsed = bsc_nat_parse(msg);
+	if (!parsed) {
+		printf("FAIL: Could not parse SMS\n");
+		abort();
+	}
+
+	out = bsc_nat_rewrite_msg(nat, msg, parsed, imsi);
+	if (out == msg) {
+		printf("FAIL: This should have changed.\n");
+		abort();
+	}
+
+	verify_msg(out, smsc_rewrite_num_patched,
+		   ARRAY_SIZE(smsc_rewrite_num_patched));
+	msgb_free(out);
+
+	/*
+	 * Now with TP-SRR rewriting enabled
+	 */
+	INIT_LLIST_HEAD(&clear_entries.entry);
+	clear_entry.mcc = "^515039";
+	clear_entry.option = "";
+	clear_entry.text   = "";
+	llist_add_tail(&clear_entry.list, &clear_entries.entry);
+	bsc_nat_num_rewr_entry_adapt(nat, &nat->sms_clear_tp_srr, &clear_entries);
+
+ 	msg = msgb_alloc(4096, "SMSC rewrite");
+	copy_to_msg(msg, smsc_rewrite, ARRAY_SIZE(smsc_rewrite));
+	parsed = bsc_nat_parse(msg);
+	if (!parsed) {
+		printf("FAIL: Could not parse SMS\n");
+		abort();
+	}
+
+	out = bsc_nat_rewrite_msg(nat, msg, parsed, imsi);
+	if (out == msg) {
+		printf("FAIL: This should have changed.\n");
+		abort();
+	}
+
+	verify_msg(out, smsc_rewrite_num_patched_tp_srr,
+		   ARRAY_SIZE(smsc_rewrite_num_patched_tp_srr));
+	msgb_free(out);
 }
 
 int main(int argc, char **argv)
@@ -1063,7 +1163,8 @@ int main(int argc, char **argv)
 	test_cr_filter();
 	test_dt_filter();
 	test_setup_rewrite();
-	test_smsc_rewrite();
+	test_sms_smsc_rewrite();
+	test_sms_number_rewrite();
 	test_mgcp_allocations();
 
 	printf("Testing execution completed.\n");

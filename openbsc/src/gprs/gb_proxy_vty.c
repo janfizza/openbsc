@@ -24,9 +24,10 @@
 
 #include <osmocom/core/talloc.h>
 
+#include <osmocom/gprs/gprs_ns.h>
+
 #include <openbsc/debug.h>
 #include <openbsc/gb_proxy.h>
-#include <openbsc/gprs_ns.h>
 #include <openbsc/vty.h>
 
 #include <osmocom/vty/command.h>
@@ -39,7 +40,7 @@ static struct gbproxy_config *g_cfg = NULL;
  */
 static struct cmd_node gbproxy_node = {
 	GBPROXY_NODE,
-	"%s(gbproxy)#",
+	"%s(config-gbproxy)# ",
 	1,
 };
 

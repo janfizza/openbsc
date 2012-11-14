@@ -40,24 +40,26 @@
 static struct bsc_nat *_nat;
 
 
+#define BSC_STR "Information about BSCs\n"
+#define MGCP_STR "MGCP related status\n"
 #define PAGING_STR "Paging\n"
 #define SMSC_REWRITE "SMSC Rewriting\n"
 
 static struct cmd_node nat_node = {
 	NAT_NODE,
-	"%s(nat)#",
+	"%s(config-nat)# ",
 	1,
 };
 
 static struct cmd_node bsc_node = {
 	NAT_BSC_NODE,
-	"%s(bsc)#",
+	"%s(config-nat-bsc)# ",
 	1,
 };
 
 static struct cmd_node pgroup_node = {
 	PGROUP_NODE,
-	"%s(paging-group)#",
+	"%s(config-nat-paging-group)# ",
 	1,
 };
 
@@ -127,6 +129,12 @@ static int config_write_nat(struct vty *vty)
 	if (_nat->tpdest_match_name)
 		vty_out(vty, " rewrite-smsc tp-dest-match %s%s",
 			_nat->tpdest_match_name, VTY_NEWLINE);
+	if (_nat->sms_clear_tp_srr_name)
+		vty_out(vty, " sms-clear-tp-srr %s%s",
+			_nat->sms_clear_tp_srr_name, VTY_NEWLINE);
+	if (_nat->sms_num_rewr_name)
+		vty_out(vty, " sms-number-rewrite %s%s",
+			_nat->sms_num_rewr_name, VTY_NEWLINE);
 
 	llist_for_each_entry(lst, &_nat->access_lists, list)
 		write_acc_lst(vty, lst);
@@ -162,7 +170,8 @@ static int config_write_bsc(struct vty *vty)
 
 
 DEFUN(show_sccp, show_sccp_cmd, "show sccp connections",
-      SHOW_STR "Display information about current SCCP connections")
+      SHOW_STR "Display information about SCCP\n"
+      "All active connections\n")
 {
 	struct sccp_connections *con;
 	vty_out(vty, "Listing all open SCCP connections%s", VTY_NEWLINE);
@@ -183,7 +192,8 @@ DEFUN(show_sccp, show_sccp_cmd, "show sccp connections",
 }
 
 DEFUN(show_bsc, show_bsc_cmd, "show bsc connections",
-      SHOW_STR "Display information about current BSCs")
+      SHOW_STR BSC_STR
+      "All active connections\n")
 {
 	struct bsc_connection *con;
 	struct sockaddr_in sock;
@@ -201,7 +211,7 @@ DEFUN(show_bsc, show_bsc_cmd, "show bsc connections",
 }
 
 DEFUN(show_bsc_mgcp, show_bsc_mgcp_cmd, "show bsc mgcp NR",
-      SHOW_STR "Display the MGCP status for a given BSC")
+      SHOW_STR BSC_STR MGCP_STR "Identifier of the BSC\n")
 {
 	struct bsc_connection *con;
 	int nr = atoi(argv[0]);
@@ -236,7 +246,7 @@ DEFUN(show_bsc_mgcp, show_bsc_mgcp_cmd, "show bsc mgcp NR",
 }
 
 DEFUN(show_bsc_cfg, show_bsc_cfg_cmd, "show bsc config",
-      SHOW_STR "Display information about known BSC configs")
+      SHOW_STR BSC_STR "Configuration of BSCs\n")
 {
 	struct bsc_config *conf;
 	llist_for_each_entry(conf, &_nat->bsc_configs, entry) {
@@ -294,7 +304,8 @@ static void dump_stat_bsc(struct vty *vty, struct bsc_config *conf)
 DEFUN(show_stats,
       show_stats_cmd,
       "show statistics [NR]",
-	SHOW_STR "Display network statistics")
+      SHOW_STR "Display network statistics\n"
+      "Number of the BSC\n")
 {
 	struct bsc_config *conf;
 
@@ -337,7 +348,8 @@ DEFUN(show_stats_lac,
 DEFUN(show_msc,
       show_msc_cmd,
       "show msc connection",
-      SHOW_STR "Show the status of the MSC connection.")
+      SHOW_STR "MSC related information\n"
+      "Status of the A-link connection\n")
 {
 	if (!_nat->msc_con) {
 		vty_out(vty, "The MSC is not yet configured.\n");
@@ -352,7 +364,7 @@ DEFUN(show_msc,
 DEFUN(close_bsc,
       close_bsc_cmd,
       "close bsc connection BSC_NR",
-      "Close the connection with the BSC identified by the config number.")
+      "Close\n" "A-link\n" "Connection\n" "Identifier of the BSC\n")
 {
 	struct bsc_connection *bsc;
 	int bsc_nr = atoi(argv[0]);
@@ -378,7 +390,8 @@ DEFUN(cfg_nat, cfg_nat_cmd, "nat", "Configute the NAT")
 DEFUN(cfg_nat_msc_ip,
       cfg_nat_msc_ip_cmd,
       "msc ip A.B.C.D",
-      "Set the IP address of the MSC.")
+      "MSC related configuration\n"
+      "Configure the IP address\n" IP_STR)
 {
 	bsc_nat_set_msc_ip(_nat, argv[0]);
 	return CMD_SUCCESS;
@@ -387,7 +400,9 @@ DEFUN(cfg_nat_msc_ip,
 DEFUN(cfg_nat_msc_port,
       cfg_nat_msc_port_cmd,
       "msc port <1-65500>",
-      "Set the port of the MSC.")
+      "MSC related configuration\n"
+      "Configure the port\n"
+      "Port number\n")
 {
 	_nat->main_dest->port = atoi(argv[0]);
 	return CMD_SUCCESS;
@@ -396,7 +411,9 @@ DEFUN(cfg_nat_msc_port,
 DEFUN(cfg_nat_auth_time,
       cfg_nat_auth_time_cmd,
       "timeout auth <1-256>",
-      "The time to wait for an auth response.")
+      "Timeout configuration\n"
+      "Authentication timeout\n"
+      "Timeout in seconds\n")
 {
 	_nat->auth_timeout = atoi(argv[0]);
 	return CMD_SUCCESS;
@@ -405,7 +422,9 @@ DEFUN(cfg_nat_auth_time,
 DEFUN(cfg_nat_ping_time,
       cfg_nat_ping_time_cmd,
       "timeout ping NR",
-      "Send a ping every NR seconds. Negative to disable.")
+      "Timeout configuration\n"
+      "Time between two pings\n"
+      "Timeout in seconds\n")
 {
 	_nat->ping_timeout = atoi(argv[0]);
 	return CMD_SUCCESS;
@@ -414,7 +433,9 @@ DEFUN(cfg_nat_ping_time,
 DEFUN(cfg_nat_pong_time,
       cfg_nat_pong_time_cmd,
       "timeout pong NR",
-      "Wait NR seconds for the PONG response. Should be smaller than ping.")
+      "Timeout configuration\n"
+      "Waiting for pong timeout\n"
+      "Timeout in seconds\n")
 {
 	_nat->pong_timeout = atoi(argv[0]);
 	return CMD_SUCCESS;
@@ -422,7 +443,8 @@ DEFUN(cfg_nat_pong_time,
 
 DEFUN(cfg_nat_token, cfg_nat_token_cmd,
       "token TOKEN",
-      "Set a token for the NAT")
+      "Authentication token configuration\n"
+      "Token of the BSC, currently transferred in cleartext\n")
 {
 	bsc_replace_string(_nat, &_nat->token, argv[0]);
 	return CMD_SUCCESS;
@@ -512,6 +534,51 @@ DEFUN(cfg_nat_smsc_tpdest,
 			     &_nat->tpdest_match, argv[0]);
 }
 
+DEFUN(cfg_nat_sms_clear_tpsrr,
+      cfg_nat_sms_clear_tpsrr_cmd,
+      "sms-clear-tp-srr FILENAME",
+      "SMS TPDU Sender Report Request clearing\n"
+      "Files with rules for matching MSISDN\n")
+{
+	return replace_rules(_nat, &_nat->sms_clear_tp_srr_name,
+			     &_nat->sms_clear_tp_srr, argv[0]);
+}
+
+DEFUN(cfg_nat_no_sms_clear_tpsrr,
+      cfg_nat_no_sms_clear_tpsrr_cmd,
+      "no sms-clear-tp-srr",
+      NO_STR
+      "SMS TPDU Sender Report Request clearing\n")
+{
+	talloc_free(_nat->sms_clear_tp_srr_name);
+	_nat->sms_clear_tp_srr_name = NULL;
+
+	bsc_nat_num_rewr_entry_adapt(NULL, &_nat->sms_clear_tp_srr, NULL);
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_nat_sms_number_rewrite,
+      cfg_nat_sms_number_rewrite_cmd,
+      "sms-number-rewrite FILENAME",
+      "SMS TP-DA Number rewriting\n"
+      "Files with rules for matching MSISDN\n")
+{
+	return replace_rules(_nat, &_nat->sms_num_rewr_name,
+			     &_nat->sms_num_rewr, argv[0]);
+}
+
+DEFUN(cfg_nat_no_sms_number_rewrite,
+      cfg_nat_no_sms_number_rewrite_cmd,
+      "no sms-number-rewrite",
+      NO_STR "Disable SMS TP-DA rewriting\n")
+{
+	talloc_free(_nat->sms_num_rewr_name);
+	_nat->sms_num_rewr_name = NULL;
+
+	bsc_nat_num_rewr_entry_adapt(NULL, &_nat->sms_num_rewr, NULL);
+	return CMD_SUCCESS;
+}
+
 DEFUN(cfg_nat_ussd_lst_name,
       cfg_nat_ussd_lst_name_cmd,
       "ussd-list-name NAME",
@@ -552,7 +619,8 @@ DEFUN(cfg_nat_ussd_local,
 }
 
 /* per BSC configuration */
-DEFUN(cfg_bsc, cfg_bsc_cmd, "bsc BSC_NR", "Select a BSC to configure")
+DEFUN(cfg_bsc, cfg_bsc_cmd, "bsc BSC_NR",
+      "BSC configuration\n" "Identifier of the BSC\n")
 {
 	int bsc_nr = atoi(argv[0]);
 	struct bsc_config *bsc;
@@ -576,7 +644,9 @@ DEFUN(cfg_bsc, cfg_bsc_cmd, "bsc BSC_NR", "Select a BSC to configure")
 	return CMD_SUCCESS;
 }
 
-DEFUN(cfg_bsc_token, cfg_bsc_token_cmd, "token TOKEN", "Set the token")
+DEFUN(cfg_bsc_token, cfg_bsc_token_cmd, "token TOKEN",
+      "Authentication token configuration\n"
+      "Token of the BSC, currently transferred in cleartext\n")
 {
 	struct bsc_config *conf = vty->index;
 
@@ -627,9 +697,10 @@ DEFUN(cfg_bsc_no_lac, cfg_bsc_no_lac_cmd,
 DEFUN(cfg_lst_imsi_allow,
       cfg_lst_imsi_allow_cmd,
       "access-list NAME imsi-allow [REGEXP]",
-      "Add the regexp to the allowed list\n"
-      "The name of the access-list\n"
-      "The regexp of allowed IMSIs\n")
+      "Access list commands\n"
+      "Name of the access list\n"
+      "Add allowed IMSI to the list\n"
+      "Regexp for IMSIs\n")
 {
 	struct bsc_nat_acc_lst *acc;
 	struct bsc_nat_acc_lst_entry *entry;
@@ -650,9 +721,10 @@ DEFUN(cfg_lst_imsi_allow,
 DEFUN(cfg_lst_imsi_deny,
       cfg_lst_imsi_deny_cmd,
       "access-list NAME imsi-deny [REGEXP]",
-      "Add the regexp to the deny list\n"
-      "The name of the access-list\n"
-      "The regexp of to be denied IMSIs\n")
+      "Access list commands\n"
+      "Name of the access list\n"
+      "Add denied IMSI to the list\n"
+      "Regexp for IMSIs\n")
 {
 	struct bsc_nat_acc_lst *acc;
 	struct bsc_nat_acc_lst_entry *entry;
@@ -689,7 +761,7 @@ DEFUN(cfg_lst_no,
 DEFUN(show_acc_lst,
       show_acc_lst_cmd,
       "show access-list NAME",
-      SHOW_STR "The name of the access list\n")
+      SHOW_STR "IMSI access list\n" "Name of the access list\n")
 {
 	struct bsc_nat_acc_lst *acc;
 	acc = bsc_nat_acc_lst_find(_nat, argv[0]);
@@ -743,7 +815,8 @@ DEFUN(cfg_bsc_max_endps, cfg_bsc_max_endps_cmd,
 DEFUN(cfg_bsc_paging,
       cfg_bsc_paging_cmd,
       "paging forbidden (0|1)",
-      PAGING_STR "Forbid sending PAGING REQUESTS to the BSC.")
+      PAGING_STR "Forbid sending PAGING REQUESTS to the BSC.\n"
+      "Do not forbid\n" "Forbid\n")
 {
 	struct bsc_config *conf = vty->index;
 
@@ -758,7 +831,7 @@ DEFUN(cfg_bsc_paging,
 DEFUN(cfg_bsc_desc,
       cfg_bsc_desc_cmd,
       "description DESC",
-      "Provide a description for the given BSC.")
+      "Provide a description for the given BSC.\n" "Description\n")
 {
 	struct bsc_config *conf = vty->index;
 
@@ -792,7 +865,9 @@ DEFUN(cfg_bsc_no_paging_grp,
 
 DEFUN(test_regex, test_regex_cmd,
       "test regex PATTERN STRING",
-      "Check if the string is matching the current pattern.")
+      "Test utilities\n"
+      "Regexp testing\n" "The regexp pattern\n"
+      "The string to match\n")
 {
 	regex_t reg;
 	char *str = NULL;
@@ -867,7 +942,7 @@ DEFUN(cfg_nat_pgroup, cfg_nat_pgroup_cmd,
 
 DEFUN(cfg_nat_no_pgroup, cfg_nat_no_pgroup_cmd,
       "no paging-group <0-1000>",
-      NO_STR "Delete paging-group\n")
+      NO_STR "Delete paging-group\n" "Paging-group number\n")
 {
 	int group = atoi(argv[0]);
 	struct bsc_nat_paging_group *pgroup;
@@ -958,11 +1033,17 @@ int bsc_nat_vty_init(struct bsc_nat *nat)
 	install_element(NAT_NODE, &cfg_nat_number_rewrite_cmd);
 	install_element(NAT_NODE, &cfg_nat_smsc_addr_cmd);
 	install_element(NAT_NODE, &cfg_nat_smsc_tpdest_cmd);
+	install_element(NAT_NODE, &cfg_nat_sms_clear_tpsrr_cmd);
+	install_element(NAT_NODE, &cfg_nat_no_sms_clear_tpsrr_cmd);
+	install_element(NAT_NODE, &cfg_nat_sms_number_rewrite_cmd);
+	install_element(NAT_NODE, &cfg_nat_no_sms_number_rewrite_cmd);
 
 	install_element(NAT_NODE, &cfg_nat_pgroup_cmd);
 	install_element(NAT_NODE, &cfg_nat_no_pgroup_cmd);
 	install_node(&pgroup_node, config_write_pgroup);
 	install_default(PGROUP_NODE);
+	install_element(PGROUP_NODE, &ournode_exit_cmd);
+	install_element(PGROUP_NODE, &ournode_end_cmd);
 	install_element(PGROUP_NODE, &cfg_pgroup_lac_cmd);
 	install_element(PGROUP_NODE, &cfg_pgroup_no_lac_cmd);
 

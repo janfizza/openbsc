@@ -80,6 +80,9 @@ static void print_help()
 	printf("Some useful help...\n");
 	printf(" -h --help is printing this text.\n");
 	printf(" -c --config-file filename The config file to use.\n");
+	printf(" -s --disable-color\n");
+	printf(" -D --daemonize Fork the process into a background daemon\n");
+	printf(" -V --version Print the version number\n");
 }
 
 static void handle_options(int argc, char **argv)
@@ -91,6 +94,7 @@ static void handle_options(int argc, char **argv)
 			{"config-file", 1, 0, 'c'},
 			{"daemonize", 0, 0, 'D'},
 			{"version", 0, 0, 'V'},
+			{"disable-color", 0, 0, 's'},
 			{0, 0, 0, 0},
 		};
 
@@ -106,6 +110,9 @@ static void handle_options(int argc, char **argv)
 			break;
 		case 'c':
 			config_file = talloc_strdup(tall_bsc_ctx, optarg);
+			break;
+		case 's':
+			log_set_use_color(osmo_stderr_target, 0);
 			break;
 		case 'V':
 			print_version(1);
@@ -156,8 +163,8 @@ static int read_call_agent(struct osmo_fd *fd, unsigned int what)
 		perror("Gateway failed to read");
 		return -1;
 	} else if (slen > sizeof(addr)) {
-		fprintf(stderr, "Gateway received message from outerspace: %lu %lu\n",
-			(unsigned long int)slen, sizeof(addr));
+		fprintf(stderr, "Gateway received message from outerspace: %zu %zu\n",
+			slen, sizeof(addr));
 		return -1;
 	}
 
@@ -256,6 +263,17 @@ int main(int argc, char **argv)
 			return -1;
 		}
 
+		if (cfg->call_agent_addr) {
+			addr.sin_port = htons(2727);
+			inet_aton(cfg->call_agent_addr, &addr.sin_addr);
+			if (connect(cfg->gw_fd.bfd.fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+				LOGP(DMGCP, LOGL_ERROR, "Failed to connect to: '%s'. errno: %d\n",
+				     cfg->call_agent_addr, errno);
+				close(cfg->gw_fd.bfd.fd);
+				cfg->gw_fd.bfd.fd = -1;
+				return -1;
+			}
+		}
 
 		if (osmo_fd_register(&cfg->gw_fd.bfd) != 0) {
 			LOGP(DMGCP, LOGL_FATAL, "Failed to register the fd\n");

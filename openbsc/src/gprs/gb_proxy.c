@@ -32,11 +32,19 @@
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/select.h>
 
+#include <osmocom/gprs/gprs_ns.h>
+#include <osmocom/gprs/gprs_bssgp.h>
+
 #include <openbsc/signal.h>
 #include <openbsc/debug.h>
-#include <openbsc/gprs_ns.h>
-#include <openbsc/gprs_bssgp.h>
 #include <openbsc/gb_proxy.h>
+
+static uint16_t tlvp_val16_unal(const struct tlv_parsed *tp, int pos)
+{
+	uint16_t res;
+	memcpy(&res, TLVP_VAL(tp, pos), sizeof(res));
+	return res;
+}
 
 struct gbprox_peer {
 	struct llist_head list;
@@ -121,7 +129,7 @@ static void peer_free(struct gbprox_peer *peer)
 /* FIXME: this needs to go to libosmocore/msgb.c */
 static struct msgb *msgb_copy(const struct msgb *msg, const char *name)
 {
-	struct openbsc_msgb_cb *old_cb, *new_cb;
+	struct libgb_msgb_cb *old_cb, *new_cb;
 	struct msgb *new_msg;
 
 	new_msg = msgb_alloc(msg->data_len, name);
@@ -143,8 +151,8 @@ static struct msgb *msgb_copy(const struct msgb *msg, const char *name)
 	new_msg->l4h = new_msg->_data + (msg->l4h - msg->_data);
 
 	/* copy GB specific data */
-	old_cb = OBSC_MSGB_CB(msg);
-	new_cb = OBSC_MSGB_CB(new_msg);
+	old_cb = LIBGB_MSGB_CB(msg);
+	new_cb = LIBGB_MSGB_CB(new_msg);
 
 	new_cb->bssgph = new_msg->_data + (old_cb->bssgph - msg->_data);
 	new_cb->llch = new_msg->_data + (old_cb->llch - msg->_data);
@@ -245,6 +253,11 @@ static int gbprox_relay2bvci(struct msgb *msg, uint16_t ptp_bvci,
 	return gbprox_relay2peer(msg, peer, ns_bvci);
 }
 
+int bssgp_prim_cb(struct osmo_prim_hdr *oph, void *ctx)
+{
+	return 0;
+}
+
 /* Receive an incoming signalling message from a BSS-side NS-VC */
 static int gbprox_rx_sig_from_bss(struct msgb *msg, struct gprs_nsvc *nsvc,
 				  uint16_t ns_bvci)
@@ -300,7 +313,7 @@ static int gbprox_rx_sig_from_bss(struct msgb *msg, struct gprs_nsvc *nsvc,
 		 * don't want the SGSN to reset, as the signalling endpoint
 		 * is common for all point-to-point BVCs (and thus all BTS) */
 		if (TLVP_PRESENT(&tp, BSSGP_IE_BVCI)) {
-			uint16_t bvci = ntohs(*(uint16_t *)TLVP_VAL(&tp, BSSGP_IE_BVCI));
+			uint16_t bvci = ntohs(tlvp_val16_unal(&tp, BSSGP_IE_BVCI));
 			LOGP(DGPRS, LOGL_INFO, "NSEI=%u Rx BVC RESET (BVCI=%u)\n",
 				nsvc->nsei, bvci);
 			if (bvci == 0) {
@@ -361,7 +374,7 @@ static int gbprox_rx_paging(struct msgb *msg, struct tlv_parsed *tp,
 	LOGP(DGPRS, LOGL_INFO, "NSEI=%u(SGSN) BSSGP PAGING ",
 		nsvc->nsei);
 	if (TLVP_PRESENT(tp, BSSGP_IE_BVCI)) {
-		uint16_t bvci = ntohs(*(uint16_t *)TLVP_VAL(tp, BSSGP_IE_BVCI));
+		uint16_t bvci = ntohs(tlvp_val16_unal(tp, BSSGP_IE_BVCI));
 		LOGPC(DGPRS, LOGL_INFO, "routing by BVCI to peer BVCI=%u\n",
 			bvci);
 	} else if (TLVP_PRESENT(tp, BSSGP_IE_ROUTEING_AREA)) {
@@ -394,7 +407,7 @@ static int rx_reset_from_sgsn(struct msgb *msg, struct tlv_parsed *tp,
 		return bssgp_tx_status(BSSGP_CAUSE_MISSING_MAND_IE,
 				       NULL, msg);
 	}
-	ptp_bvci = ntohs(*(uint16_t *)TLVP_VAL(tp, BSSGP_IE_BVCI));
+	ptp_bvci = ntohs(tlvp_val16_unal(tp, BSSGP_IE_BVCI));
 
 	if (ptp_bvci >= 2) {
 		/* A reset for a PTP BVC was received, forward it to its
@@ -458,7 +471,7 @@ static int gbprox_rx_sig_from_sgsn(struct msgb *msg, struct gprs_nsvc *nsvc,
 		/* simple case: BVCI IE is mandatory */
 		if (!TLVP_PRESENT(&tp, BSSGP_IE_BVCI))
 			goto err_mand_ie;
-		bvci = ntohs(*(uint16_t *)TLVP_VAL(&tp, BSSGP_IE_BVCI));
+		bvci = ntohs(tlvp_val16_unal(&tp, BSSGP_IE_BVCI));
 		rc = gbprox_relay2bvci(msg, bvci, ns_bvci);
 		break;
 	case BSSGP_PDUT_PAGING_PS:
@@ -478,10 +491,9 @@ static int gbprox_rx_sig_from_sgsn(struct msgb *msg, struct gprs_nsvc *nsvc,
 			"cause=0x%02x(%s) ", *TLVP_VAL(&tp, BSSGP_IE_CAUSE),
 			bssgp_cause_str(*TLVP_VAL(&tp, BSSGP_IE_CAUSE)));
 		if (TLVP_PRESENT(&tp, BSSGP_IE_BVCI)) {
-			uint16_t *bvci = (uint16_t *)
-						TLVP_VAL(&tp, BSSGP_IE_BVCI);
+			uint16_t bvci = tlvp_val16_unal(&tp, BSSGP_IE_BVCI);
 			LOGPC(DGPRS, LOGL_NOTICE,
-				"BVCI=%u\n", ntohs(*bvci));
+				"BVCI=%u\n", ntohs(bvci));
 		} else
 			LOGPC(DGPRS, LOGL_NOTICE, "\n");
 		break;
@@ -502,7 +514,7 @@ static int gbprox_rx_sig_from_sgsn(struct msgb *msg, struct gprs_nsvc *nsvc,
 	case BSSGP_PDUT_BVC_UNBLOCK_ACK:
 		if (!TLVP_PRESENT(&tp, BSSGP_IE_BVCI))
 			goto err_mand_ie;
-		bvci = ntohs(*(uint16_t *)TLVP_VAL(&tp, BSSGP_IE_BVCI));
+		bvci = ntohs(tlvp_val16_unal(&tp, BSSGP_IE_BVCI));
 		if (bvci == 0) {
 			LOGP(DGPRS, LOGL_NOTICE, "NSEI=%u(SGSN) BSSGP "
 			     "%sBLOCK_ACK for signalling BVCI ?!?\n", nsvc->nsei,
@@ -595,7 +607,7 @@ int gbprox_signal(unsigned int subsys, unsigned int signal,
 	struct gprs_nsvc *nsvc = nssd->nsvc;
 	struct gbprox_peer *peer;
 
-	if (subsys != SS_NS)
+	if (subsys != SS_L_NS)
 		return 0;
 
 	if (signal == S_NS_RESET && nsvc->nsei == gbcfg.nsip_sgsn_nsei) {
@@ -609,8 +621,8 @@ int gbprox_signal(unsigned int subsys, unsigned int signal,
 	if (signal == S_NS_ALIVE_EXP && nsvc->remote_end_is_sgsn) {
 		LOGP(DGPRS, LOGL_NOTICE, "Tns alive expired too often, "
 			"re-starting RESET procedure\n");
-		nsip_connect(nsvc->nsi, &nsvc->ip.bts_addr, nsvc->nsei,
-			     nsvc->nsvci);
+		gprs_ns_nsip_connect(nsvc->nsi, &nsvc->ip.bts_addr,
+				  nsvc->nsei, nsvc->nsvci);
 	}
 
 	if (!nsvc->remote_end_is_sgsn) {

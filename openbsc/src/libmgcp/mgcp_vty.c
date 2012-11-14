@@ -30,6 +30,8 @@
 
 #include <string.h>
 
+#define RTCP_OMIT_STR "Drop RTCP packets in both directions\n"
+
 static struct mgcp_config *g_cfg = NULL;
 
 static struct mgcp_trunk_config *find_trunk(struct mgcp_config *cfg, int nr)
@@ -49,13 +51,13 @@ static struct mgcp_trunk_config *find_trunk(struct mgcp_config *cfg, int nr)
  */
 struct cmd_node mgcp_node = {
 	MGCP_NODE,
-	"%s(mgcp)#",
+	"%s(config-mgcp)# ",
 	1,
 };
 
 struct cmd_node trunk_node = {
 	TRUNK_NODE,
-	"%s(trunk)#",
+	"%s(config-mgcp-trunk)# ",
 	1,
 };
 
@@ -82,6 +84,10 @@ static int config_write_mgcp(struct vty *vty)
 			g_cfg->net_ports.range_start, g_cfg->net_ports.range_end, VTY_NEWLINE);
 
 	vty_out(vty, "  rtp ip-dscp %d%s", g_cfg->endp_dscp, VTY_NEWLINE);
+	if (g_cfg->trunk.omit_rtcp)
+		vty_out(vty, "  rtcp-omit%s", VTY_NEWLINE);
+	else
+		vty_out(vty, "  no rtcp-omit%s", VTY_NEWLINE);
 	if (g_cfg->trunk.audio_payload != -1)
 		vty_out(vty, "  sdp audio-payload number %d%s",
 			g_cfg->trunk.audio_payload, VTY_NEWLINE);
@@ -122,13 +128,12 @@ static void dump_trunk(struct vty *vty, struct mgcp_trunk_config *cfg)
 		struct mgcp_endpoint *endp = &cfg->endpoints[i];
 		vty_out(vty,
 			" Endpoint 0x%.2x: CI: %d net: %u/%u bts: %u/%u on %s "
-			"traffic received bts: %u/%u  remote: %u/%u transcoder: %u/%u%s",
+			"traffic received bts: %u  remote: %u transcoder: %u/%u%s",
 			i, endp->ci,
 			ntohs(endp->net_end.rtp_port), ntohs(endp->net_end.rtcp_port),
 			ntohs(endp->bts_end.rtp_port), ntohs(endp->bts_end.rtcp_port),
 			inet_ntoa(endp->bts_end.addr),
-			endp->bts_end.packets, endp->bts_state.lost_no,
-			endp->net_end.packets, endp->net_state.lost_no,
+			endp->bts_end.packets, endp->net_end.packets,
 			endp->trans_net.packets, endp->trans_bts.packets,
 			VTY_NEWLINE);
 	}
@@ -368,6 +373,24 @@ DEFUN(cfg_mgcp_number_endp,
 	return CMD_SUCCESS;
 }
 
+DEFUN(cfg_mgcp_omit_rtcp,
+      cfg_mgcp_omit_rtcp_cmd,
+      "rtcp-omit",
+      RTCP_OMIT_STR)
+{
+	g_cfg->trunk.omit_rtcp = 1;
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_mgcp_no_omit_rtcp,
+      cfg_mgcp_no_omit_rtcp_cmd,
+      "no rtcp-omit",
+      NO_STR RTCP_OMIT_STR)
+{
+	g_cfg->trunk.omit_rtcp = 0;
+	return CMD_SUCCESS;
+}
+
 #define CALL_AGENT_STR "Callagent information\n"
 DEFUN(cfg_mgcp_agent_addr,
       cfg_mgcp_agent_addr_cmd,
@@ -454,6 +477,10 @@ static int config_write_trunk(struct vty *vty)
 			trunk->audio_name, VTY_NEWLINE);
 		vty_out(vty, "  loop %d%s",
 			trunk->audio_loop, VTY_NEWLINE);
+		if (trunk->omit_rtcp)
+			vty_out(vty, "  rtcp-omit%s", VTY_NEWLINE);
+		else
+			vty_out(vty, "  no rtcp-omit%s", VTY_NEWLINE);
 	}
 
 	return CMD_SUCCESS;
@@ -500,6 +527,26 @@ DEFUN(cfg_trunk_loop,
 	struct mgcp_trunk_config *trunk = vty->index;
 
 	trunk->audio_loop = atoi(argv[0]);
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_trunk_omit_rtcp,
+      cfg_trunk_omit_rtcp_cmd,
+      "rtcp-omit",
+      RTCP_OMIT_STR)
+{
+	struct mgcp_trunk_config *trunk = vty->index;
+	trunk->omit_rtcp = 1;
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_trunk_no_omit_rtcp,
+      cfg_trunk_no_omit_rtcp_cmd,
+      "no rtcp-omit",
+      NO_STR RTCP_OMIT_STR)
+{
+	struct mgcp_trunk_config *trunk = vty->index;
+	trunk->omit_rtcp = 0;
 	return CMD_SUCCESS;
 }
 
@@ -637,12 +684,68 @@ DEFUN(free_endp, free_endp_cmd,
 	return CMD_SUCCESS;
 }
 
+DEFUN(reset_endp, reset_endp_cmd,
+      "reset-endpoint <0-64> NUMBER",
+      "Reset the given endpoint\n" "Trunk number\n"
+      "Endpoint number in hex.\n")
+{
+	struct mgcp_trunk_config *trunk;
+	struct mgcp_endpoint *endp;
+	int endp_no, rc;
+
+	trunk = find_trunk(g_cfg, atoi(argv[0]));
+	if (!trunk) {
+		vty_out(vty, "%%Trunk %d not found in the config.%s",
+			atoi(argv[0]), VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	if (!trunk->endpoints) {
+		vty_out(vty, "%%Trunk %d has no endpoints allocated.%s",
+			trunk->trunk_nr, VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	endp_no = strtoul(argv[1], NULL, 16);
+	if (endp_no < 1 || endp_no >= trunk->number_endpoints) {
+		vty_out(vty, "Endpoint number %s/%d is invalid.%s",
+		argv[1], endp_no, VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	endp = &trunk->endpoints[endp_no];
+	rc = mgcp_send_reset_ep(endp, ENDPOINT_NUMBER(endp));
+	if (rc < 0) {
+		vty_out(vty, "Error %d sending reset.%s", rc, VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+	return CMD_SUCCESS;
+}
+
+DEFUN(reset_all_endp, reset_all_endp_cmd,
+      "reset-all-endpoints",
+      "Reset all endpoints\n")
+{
+	int rc;
+
+	rc = mgcp_send_reset_all(g_cfg);
+	if (rc < 0) {
+		vty_out(vty, "Error %d during endpoint reset.%s",
+			rc, VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+	return CMD_SUCCESS;
+}
+
+
 int mgcp_vty_init(void)
 {
 	install_element_ve(&show_mgcp_cmd);
 	install_element(ENABLE_NODE, &loop_endp_cmd);
 	install_element(ENABLE_NODE, &tap_call_cmd);
 	install_element(ENABLE_NODE, &free_endp_cmd);
+	install_element(ENABLE_NODE, &reset_endp_cmd);
+	install_element(ENABLE_NODE, &reset_all_endp_cmd);
 
 	install_element(CONFIG_NODE, &cfg_mgcp_cmd);
 	install_node(&mgcp_node, config_write_mgcp);
@@ -675,6 +778,8 @@ int mgcp_vty_init(void)
 	install_element(MGCP_NODE, &cfg_mgcp_sdp_payload_name_cmd_old);
 	install_element(MGCP_NODE, &cfg_mgcp_loop_cmd);
 	install_element(MGCP_NODE, &cfg_mgcp_number_endp_cmd);
+	install_element(MGCP_NODE, &cfg_mgcp_omit_rtcp_cmd);
+	install_element(MGCP_NODE, &cfg_mgcp_no_omit_rtcp_cmd);
 
 	install_element(MGCP_NODE, &cfg_mgcp_trunk_cmd);
 	install_node(&trunk_node, config_write_trunk);
@@ -686,6 +791,8 @@ int mgcp_vty_init(void)
 	install_element(TRUNK_NODE, &cfg_trunk_payload_number_cmd_old);
 	install_element(TRUNK_NODE, &cfg_trunk_payload_name_cmd_old);
 	install_element(TRUNK_NODE, &cfg_trunk_loop_cmd);
+	install_element(TRUNK_NODE, &cfg_trunk_omit_rtcp_cmd);
+	install_element(TRUNK_NODE, &cfg_trunk_no_omit_rtcp_cmd);
 
 	return 0;
 }

@@ -19,7 +19,8 @@
 
 #include <osmocom/abis/e1_input.h>
 
-struct osmo_msc_data;
+struct osmo_bsc_data;
+
 struct osmo_bsc_sccp_con;
 struct gsm_sms_queue;
 
@@ -111,7 +112,7 @@ struct gsm_abis_mo {
 /* state of a logical channel */
 enum gsm_lchan_state {
 	LCHAN_S_NONE,		/* channel is not active */
-	LCHAN_S_ACT_REQ,	/* channel activatin requested */
+	LCHAN_S_ACT_REQ,	/* channel activation requested */
 	LCHAN_S_ACTIVE,		/* channel is active and operational */
 	LCHAN_S_REL_REQ,	/* channel release has been requested */
 	LCHAN_S_REL_ERR,	/* channel is in an error state */
@@ -148,6 +149,18 @@ struct amr_multirate_conf {
 };
 /* /BTS ONLY */
 
+enum lchan_csd_mode {
+	LCHAN_CSD_M_NT,
+	LCHAN_CSD_M_T_1200_75,
+	LCHAN_CSD_M_T_600,
+	LCHAN_CSD_M_T_1200,
+	LCHAN_CSD_M_T_2400,
+	LCHAN_CSD_M_T_9600,
+	LCHAN_CSD_M_T_14400,
+	LCHAN_CSD_M_T_29000,
+	LCHAN_CSD_M_T_32000,
+};
+
 struct gsm_lchan {
 	/* The TS that we're part of */
 	struct gsm_bts_trx_ts *ts;
@@ -159,6 +172,7 @@ struct gsm_lchan {
 	enum rsl_cmod_spd rsl_cmode;
 	/* If TCH, traffic channel mode */
 	enum gsm48_chan_mode tch_mode;
+	enum lchan_csd_mode csd_mode;
 	/* State */
 	enum gsm_lchan_state state;
 	/* Power levels for MS and BTS */
@@ -176,8 +190,10 @@ struct gsm_lchan {
 
 	/* Established data link layer services */
 	uint8_t sapis[8];
-	int sach_deact;
-	int release_reason;
+	int sacch_deact;
+
+	/** GSM 08.58 9.3.20 */
+	int release_mode;
 
 	struct {
 		uint32_t bound_ip;
@@ -249,6 +265,17 @@ struct gsm_lchan {
 			uint8_t len;
 		} last_sid;
 	} tch;
+	/* BTS-side ciphering state (rx only, bi-directional, ...) */
+	uint8_t ciph_state;
+	uint8_t loopback;
+	struct {
+		uint8_t active;
+		uint8_t ref;
+		/* T3105: PHYS INF retransmission */
+		struct osmo_timer_list t3105;
+		/* counts up to Ny1 */
+		unsigned int phys_info_count;
+	} ho;
 #endif
 };
 
@@ -299,7 +326,11 @@ struct gsm_bts_trx {
 	/* how do we talk RSL with this TRX? */
 	struct gsm_e1_subslot rsl_e1_link;
 	uint8_t rsl_tei;
+#ifdef ROLE_BSC
 	struct e1inp_sign_link *rsl_link;
+#else
+	struct ipabis_link *rsl_link;
+#endif
 	/* Some BTS (specifically Ericsson RBS) have a per-TRX OML Link */
 	struct e1inp_sign_link *oml_link;
 
@@ -344,6 +375,8 @@ enum gsm_bts_type {
 	GSM_BTS_TYPE_RBS2000,
 	GSM_BTS_TYPE_HSL_FEMTO,
 	GSM_BTS_TYPE_NOKIA_SITE,
+	GSM_BTS_TYPE_OSMO_SYSMO,
+	_NUM_GSM_BTS_TYPE
 };
 
 struct vty;
@@ -415,16 +448,78 @@ struct gsm_bts_gprs_nsvc {
 	struct gsm_abis_mo mo;
 };
 
+enum gprs_rlc_par {
+	RLC_T3142,
+	RLC_T3169,
+	RLC_T3191,
+	RLC_T3193,
+	RLC_T3195,
+	RLC_N3101,
+	RLC_N3103,
+	RLC_N3105,
+	CV_COUNTDOWN,
+	T_DL_TBF_EXT,	/* ms */
+	T_UL_TBF_EXT,	/* ms */
+	_NUM_RLC_PAR
+};
+
+enum gprs_cs {
+	GPRS_CS1,
+	GPRS_CS2,
+	GPRS_CS3,
+	GPRS_CS4,
+	GPRS_MCS1,
+	GPRS_MCS2,
+	GPRS_MCS3,
+	GPRS_MCS4,
+	GPRS_MCS5,
+	GPRS_MCS6,
+	GPRS_MCS7,
+	GPRS_MCS8,
+	GPRS_MCS9,
+	_NUM_GRPS_CS
+};
+
+struct gprs_rlc_cfg {
+	uint16_t parameter[_NUM_RLC_PAR];
+	struct {
+		uint16_t repeat_time; /* ms */
+		uint8_t repeat_count;
+	} paging;
+	uint32_t cs_mask; /* bitmask of gprs_cs */
+	uint8_t initial_cs;
+	uint8_t initial_mcs;
+};
+
+
 enum neigh_list_manual_mode {
 	NL_MODE_AUTOMATIC = 0,
 	NL_MODE_MANUAL = 1,
 	NL_MODE_MANUAL_SI5SEP = 2, /* SI2 and SI5 have separate neighbor lists */
 };
 
+enum bts_loc_fix {
+	BTS_LOC_FIX_INVALID = 0,
+	BTS_LOC_FIX_2D = 1,
+	BTS_LOC_FIX_3D = 2,
+};
+
+struct bts_location {
+	struct llist_head list;
+	time_t tstamp;
+	enum bts_loc_fix valid;
+	double lat;
+	double lon;
+	double height;
+};
+
 /* One BTS */
 struct gsm_bts {
 	/* list header in net->bts_list */
 	struct llist_head list;
+
+	/* Geographical location of the BTS */
+	struct llist_head loc_list;
 
 	/* number of ths BTS in network */
 	uint8_t nr;
@@ -474,9 +569,11 @@ struct gsm_bts {
 	sysinfo_buf_t si_buf[_MAX_SYSINFO_TYPE];
 
 	/* TimeZone hours, mins, and bts specific */
-	int tzhr;
-	int tzmn;
-	int tz_bts_specific;
+	struct {
+		int hr;
+		int mn;
+		int override;
+	} tz;
 
 	/* ip.accesss Unit ID's have Site/BTS/TRX layout */
 	union {
@@ -515,10 +612,10 @@ struct gsm_bts {
 		} hsl;
 		struct {
 			uint8_t bts_type;
-			int configured:1,
-			    skip_reset:1,
-			    did_reset:1,
-			    wait_reset:1;
+			unsigned int configured:1,
+				skip_reset:1,
+				did_reset:1,
+				wait_reset:1;
 			struct osmo_timer_list reset_timer;
 		} nokia;
 	};
@@ -535,6 +632,7 @@ struct gsm_bts {
 			struct gsm_abis_mo mo;
 			uint16_t bvci;
 			uint8_t timer[11];
+			struct gprs_rlc_cfg rlc_cfg;
 		} cell;
 		struct gsm_bts_gprs_nsvc nsvc[2];
 		uint8_t rac;
@@ -592,6 +690,10 @@ struct gsm_bts_trx *gsm_bts_trx_alloc(struct gsm_bts *bts);
 
 struct gsm_bts_trx *gsm_bts_trx_num(const struct gsm_bts *bts, int num);
 
+
+const struct value_string gsm_pchant_names[10];
+const struct value_string gsm_pchant_descs[10];
+const struct value_string gsm_lchant_names[6];
 const char *gsm_pchan_name(enum gsm_phys_chan_config c);
 enum gsm_phys_chan_config gsm_pchan_parse(const char *name);
 const char *gsm_lchant_name(enum gsm_chan_t c);

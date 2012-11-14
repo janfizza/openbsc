@@ -196,7 +196,8 @@ static void lchan_deact_tmr_cb(void *data)
 	LOGP(DRSL, LOGL_NOTICE, "%s Timeout during deactivation!\n",
 		gsm_lchan_name(lchan));
 
-	rsl_lchan_set_state(lchan, LCHAN_S_NONE);
+	if (lchan->state != LCHAN_S_REL_ERR)
+		rsl_lchan_set_state(lchan, LCHAN_S_NONE);
 	lchan_free(lchan);
 }
 
@@ -362,14 +363,53 @@ static int channel_mode_from_lchan(struct rsl_ie_chan_mode *cm,
 		cm->chan_rate = RSL_CMOD_SP_GSM3;
 		break;
 	case GSM48_CMODE_DATA_14k5:
-		cm->chan_rate = RSL_CMOD_SP_NT_14k5;
-		break;
 	case GSM48_CMODE_DATA_12k0:
-		cm->chan_rate = RSL_CMOD_SP_NT_12k0;
-		break;
 	case GSM48_CMODE_DATA_6k0:
-		cm->chan_rate = RSL_CMOD_SP_NT_6k0;
-		break;
+		switch (lchan->csd_mode) {
+		case LCHAN_CSD_M_NT:
+			/* non-transparent CSD with RLP */
+			switch (lchan->tch_mode) {
+			case GSM48_CMODE_DATA_14k5:
+				cm->chan_rate = RSL_CMOD_SP_NT_14k5;
+				break;
+			case GSM48_CMODE_DATA_12k0:
+				cm->chan_rate = RSL_CMOD_SP_NT_12k0;
+				break;
+			case GSM48_CMODE_DATA_6k0:
+				cm->chan_rate = RSL_CMOD_SP_NT_6k0;
+				break;
+			default:
+				return -EINVAL;
+			}
+			break;
+			/* transparent data services below */
+		case LCHAN_CSD_M_T_1200_75:
+			cm->chan_rate = RSL_CMOD_CSD_T_1200_75;
+			break;
+		case LCHAN_CSD_M_T_600:
+			cm->chan_rate = RSL_CMOD_CSD_T_600;
+			break;
+		case LCHAN_CSD_M_T_1200:
+			cm->chan_rate = RSL_CMOD_CSD_T_1200;
+			break;
+		case LCHAN_CSD_M_T_2400:
+			cm->chan_rate = RSL_CMOD_CSD_T_2400;
+			break;
+		case LCHAN_CSD_M_T_9600:
+			cm->chan_rate = RSL_CMOD_CSD_T_9600;
+			break;
+		case LCHAN_CSD_M_T_14400:
+			cm->chan_rate = RSL_CMOD_CSD_T_14400;
+			break;
+		case LCHAN_CSD_M_T_29000:
+			cm->chan_rate = RSL_CMOD_CSD_T_29000;
+			break;
+		case LCHAN_CSD_M_T_32000:
+			cm->chan_rate = RSL_CMOD_CSD_T_32000;
+			break;
+		default:
+			return -EINVAL;
+		}
 	default:
 		return -EINVAL;
 	}
@@ -782,6 +822,9 @@ int rsl_establish_request(struct gsm_lchan *lchan, uint8_t link_id)
 			     link_id, 0);
 	msg->dst = lchan->ts->trx->rsl_link;
 
+	DEBUGP(DRLL, "%s RSL RLL ESTABLISH REQ (link_id=0x%02x)\n",
+		gsm_lchan_name(lchan), link_id);
+
 	return abis_rsl_sendmsg(msg);
 }
 
@@ -803,6 +846,9 @@ int rsl_release_request(struct gsm_lchan *lchan, uint8_t link_id, uint8_t reason
 	/* FIXME: start some timer in case we don't receive a REL ACK ? */
 
 	msg->dst = lchan->ts->trx->rsl_link;
+
+	DEBUGP(DRLL, "%s RSL RLL RELEASE REQ (link_id=0x%02x, reason=%u)\n",
+		gsm_lchan_name(lchan), link_id, reason);
 
 	return abis_rsl_sendmsg(msg);
 }
@@ -911,11 +957,15 @@ static void print_meas_rep_uni(struct gsm_meas_rep_unidir *mru,
 		prefix, mru->full.rx_qual, prefix, mru->sub.rx_qual);
 }
 
-static void print_meas_rep(struct gsm_meas_rep *mr)
+static void print_meas_rep(struct gsm_lchan *lchan, struct gsm_meas_rep *mr)
 {
 	int i;
+	char *name = "";
 
-	DEBUGP(DMEAS, "MEASUREMENT RESULT NR=%d ", mr->nr);
+	if (lchan && lchan->conn && lchan->conn->subscr)
+		name = subscr_name(lchan->conn->subscr);
+
+	DEBUGP(DMEAS, "[%s] MEASUREMENT RESULT NR=%d ", name, mr->nr);
 
 	if (mr->flags & MEAS_REP_F_DL_DTX)
 		DEBUGPC(DMEAS, "DTXd ");
@@ -1020,7 +1070,7 @@ static int rsl_rx_meas_res(struct msgb *msg)
 			return rc;
 	}
 
-	print_meas_rep(mr);
+	print_meas_rep(msg->lchan, mr);
 
 	send_lchan_signal(S_LCHAN_MEAS_REP, msg->lchan, mr);
 
@@ -1241,7 +1291,7 @@ static int rsl_rx_chan_rqd(struct msgb *msg)
 	int is_lu;
 
 	uint16_t arfcn;
-	uint8_t ts_number, subch;
+	uint8_t subch;
 
 	/* parse request reference to be used in immediate assign */
 	if (rqd_hdr->data[0] != RSL_IE_REQ_REFERENCE)
@@ -1283,7 +1333,6 @@ static int rsl_rx_chan_rqd(struct msgb *msg)
 		LOGP(DRSL, LOGL_NOTICE, "%s lchan_alloc() returned channel "
 		     "in state %s\n", gsm_lchan_name(lchan),
 		     gsm_lchans_name(lchan->state));
-	rsl_lchan_set_state(lchan, LCHAN_S_ACT_REQ);
 
 	/* save the RACH data as we need it after the CHAN ACT ACK */
 	lchan->rqd_ref = talloc_zero(bts, struct gsm48_req_ref);
@@ -1293,10 +1342,10 @@ static int rsl_rx_chan_rqd(struct msgb *msg)
 		return -ENOMEM;
 	}
 
+	rsl_lchan_set_state(lchan, LCHAN_S_ACT_REQ);
 	memcpy(lchan->rqd_ref, rqd_ref, sizeof(*rqd_ref));
 	lchan->rqd_ta = rqd_ta;
 
-	ts_number = lchan->ts->nr;
 	arfcn = lchan->ts->trx->arfcn;
 	subch = lchan->nr;
 	
@@ -1359,30 +1408,34 @@ static int rsl_send_imm_assignment(struct gsm_lchan *lchan)
 	return rsl_imm_assign_cmd(bts, sizeof(*ia)+ia->mob_alloc_len, (uint8_t *) ia);
 }
 
-/* MS has requested a channel on the RACH */
+/* current load on the CCCH */
 static int rsl_rx_ccch_load(struct msgb *msg)
 {
 	struct e1inp_sign_link *sign_link = msg->dst;
 	struct abis_rsl_dchan_hdr *rslh = msgb_l2(msg);
-	uint16_t pg_buf_space;
-	uint16_t rach_slot_count = -1;
-	uint16_t rach_busy_count = -1;
-	uint16_t rach_access_count = -1;
+	struct ccch_signal_data sd;
+
+	sd.bts = sign_link->trx->bts;
+	sd.rach_slot_count = -1;
+	sd.rach_busy_count = -1;
+	sd.rach_access_count = -1;
 
 	switch (rslh->data[0]) {
 	case RSL_IE_PAGING_LOAD:
-		pg_buf_space = rslh->data[1] << 8 | rslh->data[2];
-		if (is_ipaccess_bts(sign_link->trx->bts) && pg_buf_space == 0xffff) {
+		sd.pg_buf_space = rslh->data[1] << 8 | rslh->data[2];
+		if (is_ipaccess_bts(sign_link->trx->bts) && sd.pg_buf_space == 0xffff) {
 			/* paging load below configured threshold, use 50 as default */
-			pg_buf_space = 50;
+			sd.pg_buf_space = 50;
 		}
-		paging_update_buffer_space(sign_link->trx->bts, pg_buf_space);
+		paging_update_buffer_space(sign_link->trx->bts, sd.pg_buf_space);
+		osmo_signal_dispatch(SS_CCCH, S_CCCH_PAGING_LOAD, &sd);
 		break;
 	case RSL_IE_RACH_LOAD:
 		if (msg->data_len >= 7) {
-			rach_slot_count = rslh->data[2] << 8 | rslh->data[3];
-			rach_busy_count = rslh->data[4] << 8 | rslh->data[5];
-			rach_access_count = rslh->data[6] << 8 | rslh->data[7];
+			sd.rach_slot_count = rslh->data[2] << 8 | rslh->data[3];
+			sd.rach_busy_count = rslh->data[4] << 8 | rslh->data[5];
+			sd.rach_access_count = rslh->data[6] << 8 | rslh->data[7];
+			osmo_signal_dispatch(SS_CCCH, S_CCCH_RACH_LOAD, &sd);
 		}
 		break;
 	default:
@@ -1586,8 +1639,6 @@ static uint8_t ipa_smod_s_for_lchan(struct gsm_lchan *lchan)
 
 static uint8_t ipa_rtp_pt_for_lchan(struct gsm_lchan *lchan)
 {
-	struct gsm_network *net = lchan->ts->trx->bts->network;
-
 	switch (lchan->tch_mode) {
 	case GSM48_CMODE_SPEECH_V1:
 		switch (lchan->type) {
@@ -1899,6 +1950,7 @@ int abis_rsl_rcvmsg(struct msgb *msg)
 
 	if (msgb_l2len(msg) < sizeof(*rslh)) {
 		DEBUGP(DRSL, "Truncated RSL message with l2len: %u\n", msgb_l2len(msg));
+		msgb_free(msg);
 		return -1;
 	}
 
@@ -1927,7 +1979,7 @@ int abis_rsl_rcvmsg(struct msgb *msg)
 	default:
 		LOGP(DRSL, LOGL_NOTICE, "unknown RSL message discriminator "
 			"0x%02x\n", rslh->msg_discr);
-		return -EINVAL;
+		rc = -EINVAL;
 	}
 	msgb_free(msg);
 	return rc;

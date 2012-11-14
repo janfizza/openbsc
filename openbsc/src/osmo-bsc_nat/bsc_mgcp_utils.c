@@ -1,6 +1,30 @@
+/**
+ * This file contains helper routines for MGCP Gateway handling.
+ *
+ * The first thing to remember is that each BSC has its own namespace/range
+ * of endpoints. Whenever a BSSMAP ASSIGNMENT REQUEST is received this code
+ * will be called to select an endpoint on the BSC. The mapping from original
+ * multiplex/timeslot to BSC multiplex'/timeslot' will be stored.
+ *
+ * The second part is to take messages on the public MGCP GW interface
+ * and forward them to the right BSC. This requires the MSC to first
+ * assign the timeslot. This assumption has been true so far. We are using
+ * the policy_cb of the MGCP protocol code to decide if the request should
+ * be immediately answered or delayed. An extension "Z: noanswer" is used
+ * to request the BSC to not respond. This is saving some bytes of bandwidth
+ * and as we are using TCP to forward the message we know it will arrive.
+ * The mgcp_do_read method reads these messages and hands them to the protocol
+ * parsing code which will call the mentioned policy_cb. The bsc_mgcp_forward
+ * method is used on the way back from the BSC to the network.
+ *
+ * The third part is to patch messages forwarded to the BSC. This includes
+ * the endpoint number, the ports to be used inside the SDP file and maybe
+ * some other bits.
+ *
+ */
 /*
- * (C) 2010 by Holger Hans Peter Freyther <zecke@selfish.org>
- * (C) 2010 by On-Waves
+ * (C) 2010-2012 by Holger Hans Peter Freyther <zecke@selfish.org>
+ * (C) 2010-2012 by On-Waves
  * All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify
@@ -229,7 +253,7 @@ static void bsc_mgcp_send_mdcx(struct bsc_connection *bsc, int port, struct mgcp
 		       bsc->nat->mgcp_cfg->source_addr,
 		       endp->bts_end.local_port);
 	if (len < 0) {
-		LOGP(DMGCP, LOGL_ERROR, "snprintf for DLCX failed.\n");
+		LOGP(DMGCP, LOGL_ERROR, "snprintf for MDCX failed.\n");
 		return;
 	}
 
@@ -294,7 +318,7 @@ struct sccp_connections *bsc_mgcp_find_con(struct bsc_nat *nat, int endpoint)
 	return NULL;
 }
 
-int bsc_mgcp_policy_cb(struct mgcp_trunk_config *tcfg, int endpoint, int state, const char *transaction_id)
+static int bsc_mgcp_policy_cb(struct mgcp_trunk_config *tcfg, int endpoint, int state, const char *transaction_id)
 {
 	struct bsc_nat *nat;
 	struct bsc_endpoint *bsc_endp;
@@ -507,6 +531,9 @@ uint32_t bsc_mgcp_extract_ci(const char *str)
 	return ci;
 }
 
+/**
+ * Create a new MGCPCommand based on the input and endpoint from a message
+ */
 static void patch_mgcp(struct msgb *output, const char *op, const char *tok,
 		       int endp, int len, int cr)
 {
@@ -516,6 +543,11 @@ static void patch_mgcp(struct msgb *output, const char *op, const char *tok,
 
 	buf[0] = buf[39] = '\0';
 	ret = sscanf(tok, "%*s %s", buf);
+	if (ret != 1) {
+		LOGP(DMGCP, LOGL_ERROR,
+			"Failed to find Endpoint in: %s\n", tok);
+		return;
+	}
 
 	slen = sprintf((char *) output->l3h, "%s %s %x@mgw MGCP 1.0%s",
 			op, buf, endp, cr ? "\r\n" : "\n");
@@ -525,18 +557,24 @@ static void patch_mgcp(struct msgb *output, const char *op, const char *tok,
 /* we need to replace some strings... */
 struct msgb *bsc_mgcp_rewrite(char *input, int length, int endpoint, const char *ip, int port)
 {
-	static const char *crcx_str = "CRCX ";
-	static const char *dlcx_str = "DLCX ";
-	static const char *mdcx_str = "MDCX ";
+	static const char crcx_str[] = "CRCX ";
+	static const char dlcx_str[] = "DLCX ";
+	static const char mdcx_str[] = "MDCX ";
 
-	static const char *ip_str = "c=IN IP4 ";
-	static const char *aud_str = "m=audio ";
+	static const char ip_str[] = "c=IN IP4 ";
+	static const char aud_str[] = "m=audio ";
+	static const char fmt_str[] = "a=fmtp:";
 
 	char buf[128];
 	char *running, *token;
 	struct msgb *output;
 
-	if (length > 4096 - 128) {
+	/* keep state to add the a=fmtp line */
+	int found_fmtp = 0;
+	int payload = -1;
+	int cr = 1;
+
+	if (length > 4096 - 256) {
 		LOGP(DMGCP, LOGL_ERROR, "Input is too long.\n");
 		return NULL;
 	}
@@ -552,7 +590,7 @@ struct msgb *bsc_mgcp_rewrite(char *input, int length, int endpoint, const char 
 	output->l3h = output->l2h;
 	for (token = strsep(&running, "\n"); running; token = strsep(&running, "\n")) {
 		int len = strlen(token);
-		int cr = len > 0 && token[len - 1] == '\r';
+		cr = len > 0 && token[len - 1] == '\r';
 
 		if (strncmp(crcx_str, token, (sizeof crcx_str) - 1) == 0) {
 			patch_mgcp(output, "CRCX", token, endpoint, len, cr);
@@ -575,7 +613,6 @@ struct msgb *bsc_mgcp_rewrite(char *input, int length, int endpoint, const char 
 				output->l3h[0] = '\n';
 			}
 		} else if (strncmp(aud_str, token, (sizeof aud_str) - 1) == 0) {
-			int payload;
 			if (sscanf(token, "m=audio %*d RTP/AVP %d", &payload) != 1) {
 				LOGP(DMGCP, LOGL_ERROR, "Could not parsed audio line.\n");
 				msgb_free(output);
@@ -588,11 +625,27 @@ struct msgb *bsc_mgcp_rewrite(char *input, int length, int endpoint, const char 
 
 			output->l3h = msgb_put(output, strlen(buf));
 			memcpy(output->l3h, buf, strlen(buf));
+		} else if (strncmp(fmt_str, token, (sizeof fmt_str) - 1) == 0) {
+			found_fmtp = 1;
+			goto copy;
 		} else {
+copy:
 			output->l3h = msgb_put(output, len + 1);
 			memcpy(output->l3h, token, len);
 			output->l3h[len] = '\n';
 		}
+	}
+
+	/*
+	 * the above code made sure that we have 128 bytes lefts. So we can
+	 * safely append another line.
+	 */
+	if (!found_fmtp && payload != -1) {
+		snprintf(buf, sizeof(buf) - 1, "a=fmtp:%d mode-set=2%s",
+			payload, cr ? "\r\n" : "\n");
+		buf[sizeof(buf) - 1] = '\0';
+		output->l3h = msgb_put(output, strlen(buf));
+		memcpy(output->l3h, buf, strlen(buf));
 	}
 
 	return output;

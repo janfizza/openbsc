@@ -25,11 +25,13 @@
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/timer.h>
 #include <osmocom/core/rate_ctr.h>
+#include <osmocom/core/backtrace.h>
+#include <osmocom/gprs/gprs_ns.h>
+#include <osmocom/gprs/gprs_bssgp.h>
+
 #include <openbsc/gsm_subscriber.h>
 #include <openbsc/debug.h>
 #include <openbsc/gprs_sgsn.h>
-#include <openbsc/gprs_ns.h>
-#include <openbsc/gprs_bssgp.h>
 #include <openbsc/sgsn.h>
 #include <openbsc/gsm_04_08_gprs.h>
 #include <openbsc/gprs_gmm.h>
@@ -172,6 +174,8 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_alloc(uint32_t tlli,
 	return ctx;
 }
 
+/* this is a hard _free_ function, it doesn't clean up the PDP contexts
+ * in libgtp! */
 void sgsn_mm_ctx_free(struct sgsn_mm_ctx *mm)
 {
 	struct sgsn_pdp_ctx *pdp, *pdp2;
@@ -214,6 +218,7 @@ struct sgsn_pdp_ctx *sgsn_pdp_ctx_by_tid(const struct sgsn_mm_ctx *mm,
 	return NULL;
 }
 
+/* you don't want to use this directly, call sgsn_create_pdp_ctx() */
 struct sgsn_pdp_ctx *sgsn_pdp_ctx_alloc(struct sgsn_mm_ctx *mm,
 					uint8_t nsapi)
 {
@@ -236,11 +241,26 @@ struct sgsn_pdp_ctx *sgsn_pdp_ctx_alloc(struct sgsn_mm_ctx *mm,
 	return pdp;
 }
 
+#include <pdp.h>
+/* you probably want to call sgsn_delete_pdp_ctx() instead */
 void sgsn_pdp_ctx_free(struct sgsn_pdp_ctx *pdp)
 {
 	rate_ctr_group_free(pdp->ctrg);
 	llist_del(&pdp->list);
 	llist_del(&pdp->g_list);
+
+	/* _if_ we still have a library handle, at least set it to NULL
+	 * to avoid any dereferences of the now-deleted PDP context from
+	 * sgsn_libgtp:cb_data_ind() */
+	if (pdp->lib) {
+		struct pdp_t *lib = pdp->lib;
+		LOGP(DGPRS, LOGL_NOTICE, "freeing PDP context that still "
+		     "has a libgtp handle attached to it, this shouldn't "
+		     "happen!\n");
+		osmo_generate_backtrace();
+		lib->priv = NULL;
+	}
+
 	talloc_free(pdp);
 }
 
@@ -358,6 +378,7 @@ static void drop_one_pdp(struct sgsn_pdp_ctx *pdp)
 		/* FIXME: GPRS paging in case MS is SUSPENDED */
 		LOGP(DGPRS, LOGL_NOTICE, "Hard-dropping PDP ctx due to GGSN "
 			"recovery\n");
+		/* FIXME: how to tell this to libgtp? */
 		sgsn_pdp_ctx_free(pdp);
 	}
 }

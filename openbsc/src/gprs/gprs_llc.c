@@ -26,15 +26,39 @@
 #include <osmocom/core/linuxlist.h>
 #include <osmocom/core/timer.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/gprs/gprs_bssgp.h>
 
 #include <openbsc/gsm_data.h>
 #include <openbsc/debug.h>
 #include <openbsc/gprs_sgsn.h>
 #include <openbsc/gprs_gmm.h>
-#include <openbsc/gprs_bssgp.h>
 #include <openbsc/gprs_llc.h>
 #include <openbsc/crc24.h>
 #include <openbsc/sgsn.h>
+
+/* Entry function from upper level (LLC), asking us to transmit a BSSGP PDU
+ * to a remote MS (identified by TLLI) at a BTS identified by its BVCI and NSEI */
+static int _bssgp_tx_dl_ud(struct msgb *msg, struct sgsn_mm_ctx *mmctx)
+{
+	struct bssgp_dl_ud_par dup;
+	const uint8_t qos_profile_default[3] = { 0x00, 0x00, 0x20 };
+
+	memset(&dup, 0, sizeof(dup));
+	/* before we have received some identity from the MS, we might
+	 * not yet have a MMC context (e.g. XID negotiation of primarly
+	 * LLC connection fro GMM sapi). */
+	if (mmctx) {
+		dup.imsi = mmctx->imsi;
+		dup.drx_parms = mmctx->drx_parms;
+		dup.ms_ra_cap.len = mmctx->ms_radio_access_capa.len;
+		dup.ms_ra_cap.v = mmctx->ms_radio_access_capa.buf;
+	}
+	memcpy(&dup.qos_profile, qos_profile_default,
+		sizeof(qos_profile_default));
+
+	return bssgp_tx_dl_ud(msg, 1000, &dup);
+}
+
 
 /* Section 8.9.9 LLC layer parameter default values */
 static const struct gprs_llc_params llc_default_params[] = {
@@ -308,7 +332,7 @@ int gprs_llc_tx_u(struct msgb *msg, uint8_t sapi, int command,
 	/* Identifiers passed down: (BVCI, NSEI) */
 
 	/* Send BSSGP-DL-UNITDATA.req */
-	return gprs_bssgp_tx_dl_ud(msg, NULL);
+	return _bssgp_tx_dl_ud(msg, NULL);
 }
 
 /* Send XID response to LLE */
@@ -420,7 +444,7 @@ int gprs_llc_tx_ui(struct msgb *msg, uint8_t sapi, int command,
 	/* Identifiers passed down: (BVCI, NSEI) */
 
 	/* Send BSSGP-DL-UNITDATA.req */
-	return gprs_bssgp_tx_dl_ud(msg, mmctx);
+	return _bssgp_tx_dl_ud(msg, mmctx);
 }
 
 /* According to 6.4.1.6 / Figure 11 */

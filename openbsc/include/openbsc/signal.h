@@ -41,11 +41,11 @@ enum signal_subsystems {
 	SS_SUBSCR,
 	SS_SCALL,
 	SS_CHALLOC,
-	SS_NS,
 	SS_IPAC_NWL,
 	SS_RF,
 	SS_MSC,
 	SS_HO,
+	SS_CCCH,
 };
 
 /* SS_PAGING signals */
@@ -185,6 +185,7 @@ struct nm_om2k_signal_data {
 
 struct nm_nack_signal_data {
 	struct msgb *msg;
+	struct gsm_bts *bts;
 	uint8_t mt;
 };
 
@@ -214,18 +215,6 @@ struct lchan_signal_data {
 	struct gsm_meas_rep *mr;
 };
 
-enum signal_ns {
-	S_NS_RESET,
-	S_NS_BLOCK,
-	S_NS_UNBLOCK,
-	S_NS_ALIVE_EXP,	/* Tns-alive expired more than N times */
-};
-
-struct ns_signal_data {
-	struct gprs_nsvc *nsvc;
-	uint8_t cause;
-};
-
 /* MSC signals */
 enum signal_msc {
 	S_MSC_LOST,
@@ -245,6 +234,20 @@ enum signal_ho {
 struct ho_signal_data {
 	struct gsm_lchan *old_lchan;
 	struct gsm_lchan *new_lchan;
+};
+
+/* SS_CCCH signals */
+enum signal_ccch {
+	S_CCCH_PAGING_LOAD,
+	S_CCCH_RACH_LOAD,
+};
+
+struct ccch_signal_data {
+	struct gsm_bts *bts;
+	uint16_t pg_buf_space;
+	uint16_t rach_slot_count;
+	uint16_t rach_busy_count;
+	uint16_t rach_access_count;
 };
 
 #endif

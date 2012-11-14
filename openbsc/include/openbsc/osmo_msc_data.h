@@ -1,8 +1,8 @@
 /*
  * Data for the true BSC
  *
- * (C) 2010 by Holger Hans Peter Freyther <zecke@selfish.org>
- * (C) 2010 by On-Waves
+ * (C) 2010-2011 by Holger Hans Peter Freyther <zecke@selfish.org>
+ * (C) 2010-2011 by On-Waves
  * All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify
@@ -35,9 +35,19 @@ struct gsm_audio_support {
                 ver : 7;
 };
 
+enum {
+	MSC_CON_TYPE_NORMAL,
+	MSC_CON_TYPE_LOCAL,
+};
+
 struct osmo_msc_data {
+	struct llist_head entry;
+
 	/* Back pointer */
 	struct gsm_network *network;
+
+	int allow_emerg;
+	int type;
 
 	/* Connection data */
 	char *bsc_token;
@@ -57,24 +67,40 @@ struct osmo_msc_data {
 	/* destinations */
 	struct llist_head dests;
 
+	/* ussd welcome text */
+	char *ussd_welcome_txt;
 
 	/* mgcp agent */
 	struct osmo_wqueue mgcp_agent;
+
+	int nr;
+};
+
+/*
+ * Per BSC data.
+ */
+struct osmo_bsc_data {
+	struct gsm_network *network;
+
+	/* msc configuration */
+	struct llist_head mscs;
 
 	/* rf ctl related bits */
 	char *mid_call_txt;
 	int mid_call_timeout;
 	char *rf_ctrl_name;
 	struct osmo_bsc_rf *rf_ctrl;
-
-	/* ussd welcome text */
-	char *ussd_welcome_txt;
 };
 
-int osmo_bsc_msc_init(struct gsm_network *network);
+
+int osmo_bsc_msc_init(struct osmo_msc_data *msc);
 int osmo_bsc_sccp_init(struct gsm_network *gsmnet);
 int msc_queue_write(struct bsc_msc_connection *conn, struct msgb *msg, int proto);
 
 int osmo_bsc_audio_init(struct gsm_network *network);
+
+struct osmo_msc_data *osmo_msc_data_find(struct gsm_network *, int);
+struct osmo_msc_data *osmo_msc_data_alloc(struct gsm_network *, int);
+
 
 #endif

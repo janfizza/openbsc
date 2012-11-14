@@ -43,8 +43,6 @@ extern int hsl_setup(struct gsm_network *gsmnet);
 /* Callback function for NACK on the OML NM */
 static int oml_msg_nack(struct nm_nack_signal_data *nack)
 {
-	int i;
-
 	if (nack->mt == NM_MT_SET_BTS_ATTR_NACK) {
 
 		LOGP(DNM, LOGL_ERROR, "Failed to set BTS attributes. That is fatal. "
@@ -58,11 +56,13 @@ static int oml_msg_nack(struct nm_nack_signal_data *nack)
 	return 0;
 
 drop_bts:
-	for (i = 0; i < bsc_gsmnet->num_bts; ++i) {
-		struct gsm_bts *bts = gsm_bts_num(bsc_gsmnet, i);
-		if (is_ipaccess_bts(bts))
-			ipaccess_drop_oml(bts);
+	if (!nack->bts) {
+		LOGP(DNM, LOGL_ERROR, "Unknown bts. Can not drop it.\n");
+		return 0;
 	}
+
+	if (is_ipaccess_bts(nack->bts))
+		ipaccess_drop_oml(nack->bts);
 
 	return 0;
 }
@@ -124,6 +124,7 @@ static int rsl_si(struct gsm_bts_trx *trx, enum osmo_sysinfo_type i, int si_len)
 						      osmo_sitype2rsl(i),
 						      GSM_BTS_SI(bts, i), si_len);
 			}
+			rc = 0;
 		} else
 			rc = rsl_sacch_filling(trx, osmo_sitype2rsl(i),
 					       GSM_BTS_SI(bts, i), si_len);
@@ -206,9 +207,9 @@ static int set_system_infos(struct gsm_bts_trx *trx)
 
 	return 0;
 err_out:
-	LOGP(DRR, LOGL_ERROR, "Cannot generate SI %u for BTS %u, most likely "
+	LOGP(DRR, LOGL_ERROR, "Cannot generate SI%s for BTS %u, most likely "
 		"a problem with neighbor cell list generation\n",
-		i, bts->nr);
+		get_value_string(osmo_sitype_strs, i), bts->nr);
 	return rc;
 }
 
@@ -233,7 +234,7 @@ static int generate_ma_for_ts(struct gsm_bts_trx_ts *ts)
 
 	/* count the number of ARFCNs in the cell channel allocation */
 	num_cell_arfcns = 0;
-	for (i = 1; i < 1024; i++) {
+	for (i = 0; i < 1024; i++) {
 		if (bitvec_get_bit_pos(cell_chan, i))
 			num_cell_arfcns++;
 	}
@@ -244,7 +245,7 @@ static int generate_ma_for_ts(struct gsm_bts_trx_ts *ts)
 		ts->hopping.ma_len++;
 
 	n_chan = 0;
-	for (i = 1; i < 1024; i++) {
+	for (i = 0; i < 1024; i++) {
 		if (!bitvec_get_bit_pos(cell_chan, i))
 			continue;
 		/* set the corresponding bit in the MA */
@@ -418,10 +419,7 @@ static int bootstrap_bts(struct gsm_bts *bts)
 			"GSM networks and should only be used in a RF "
 			"shielded environment such as a faraday cage!\n\n");
 
-	/* Control Channel Description */
-	bts->si_common.chan_desc.att = 1;
-	bts->si_common.chan_desc.bs_pa_mfrms = RSL_BS_PA_MFRMS_5;
-	bts->si_common.chan_desc.bs_ag_blks_res = 1;
+	/* Control Channel Description is set from vty/config */
 
 	/* T3212 is set from vty/config */
 
@@ -432,6 +430,9 @@ static int bootstrap_bts(struct gsm_bts *bts)
 	switch (n) {
 	case 0:
 		bts->si_common.chan_desc.ccch_conf = RSL_BCCH_CCCH_CONF_1_C;
+		/* Limit reserved block to 2 on combined channel */
+		if (bts->si_common.chan_desc.bs_ag_blks_res > 2)
+			bts->si_common.chan_desc.bs_ag_blks_res = 2;
 		break;
 	case 1:
 		bts->si_common.chan_desc.ccch_conf = RSL_BCCH_CCCH_CONF_1_NC;

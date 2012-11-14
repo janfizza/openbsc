@@ -270,6 +270,7 @@ static int ipaccess_a_fd_cb(struct osmo_fd *bfd)
 	ipaccess_rcvmsg_base(msg, bfd);
 
 	/* initialize the networking. This includes sending a GSM08.08 message */
+	msg->cb[0] = (unsigned long) data;
 	if (hh->proto == IPAC_PROTO_IPACCESS) {
 		if (msg->l2h[0] == IPAC_MSGT_ID_ACK)
 			initialize_if_needed(data->msc_con);
@@ -413,7 +414,7 @@ static void initialize_if_needed(struct bsc_msc_connection *conn)
 			return;
 		}
 
-		sccp_write(msg, &sccp_ssn_bssap, &sccp_ssn_bssap, 0, NULL);
+		sccp_write(msg, &sccp_ssn_bssap, &sccp_ssn_bssap, 0, conn);
 		msgb_free(msg);
 		conn->is_authenticated = 1;
 	}
@@ -429,10 +430,8 @@ static void send_id_get_response(struct osmo_msc_data *data, int fd)
 	msc_queue_write(data->msc_con, msg, IPAC_PROTO_IPACCESS);
 }
 
-int osmo_bsc_msc_init(struct gsm_network *network)
+int osmo_bsc_msc_init(struct osmo_msc_data *data)
 {
-	struct osmo_msc_data *data = network->msc_data;
-
 	if (mgcp_create_port(data) != 0)
 		return -1;
 
@@ -455,4 +454,45 @@ int osmo_bsc_msc_init(struct gsm_network *network)
 	bsc_msc_connect(data->msc_con);
 
 	return 0;
+}
+
+struct osmo_msc_data *osmo_msc_data_find(struct gsm_network *net, int nr)
+{
+	struct osmo_msc_data *msc_data;
+
+	llist_for_each_entry(msc_data, &net->bsc_data->mscs, entry)
+		if (msc_data->nr == nr)
+			return msc_data;
+	return NULL;
+}
+
+struct osmo_msc_data *osmo_msc_data_alloc(struct gsm_network *net, int nr)
+{
+	struct osmo_msc_data *msc_data;
+
+	/* check if there is already one */
+	msc_data = osmo_msc_data_find(net, nr);
+	if (msc_data)
+		return msc_data;
+
+	msc_data = talloc_zero(net, struct osmo_msc_data);
+	if (!msc_data)
+		return NULL;
+
+	llist_add_tail(&msc_data->entry, &net->bsc_data->mscs);
+
+	/* Init back pointer */
+	msc_data->network = net;
+
+	INIT_LLIST_HEAD(&msc_data->dests);
+	msc_data->ping_timeout = 20;
+	msc_data->pong_timeout = 5;
+	msc_data->core_ncc = -1;
+	msc_data->core_mcc = -1;
+	msc_data->rtp_base = 4000;
+
+	msc_data->nr = nr;
+	msc_data->allow_emerg = 1;
+
+	return msc_data;
 }

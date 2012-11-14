@@ -107,7 +107,8 @@ static void subscr_dump_full_vty(struct vty *vty, struct gsm_subscriber *subscr,
 DEFUN(show_subscr_cache,
       show_subscr_cache_cmd,
       "show subscriber cache",
-	SHOW_STR "Display contents of subscriber cache\n")
+	SHOW_STR "Show information about subscribers\n"
+	"Display contents of subscriber cache\n")
 {
 	struct gsm_subscriber *subscr;
 
@@ -122,6 +123,7 @@ DEFUN(show_subscr_cache,
 DEFUN(sms_send_pend,
       sms_send_pend_cmd,
       "sms send pending",
+      "SMS related comamnds\n" "SMS Sending related commands\n"
       "Send all pending SMS")
 {
 	struct gsm_network *gsmnet = gsmnet_from_vty(vty);
@@ -208,7 +210,7 @@ DEFUN(show_subscr,
 
 DEFUN(subscriber_send_pending_sms,
       subscriber_send_pending_sms_cmd,
-      "subscriber " SUBSCR_TYPES " ID sms pending send",
+      "subscriber " SUBSCR_TYPES " ID sms pending-send",
 	SUBSCR_HELP "SMS Operations\n" "Send pending SMS\n")
 {
 	struct gsm_network *gsmnet = gsmnet_from_vty(vty);
@@ -349,10 +351,11 @@ DEFUN(subscriber_silent_call_stop,
 DEFUN(subscriber_ussd_notify,
       subscriber_ussd_notify_cmd,
       "subscriber " SUBSCR_TYPES " ID ussd-notify (0|1|2) .TEXT",
-      SUBSCR_HELP "USSD Notify\n"
-      "Subscriber ID\n"
-      "Alerting Level\n"
-      "Text Message to send\n")
+      SUBSCR_HELP "Send a USSD notify to the subscriber\n"
+      "Alerting Level 0\n"
+      "Alerting Level 1\n"
+      "Alerting Level 2\n"
+      "Text of USSD message to send\n")
 {
 	char *text;
 	struct gsm_subscriber_connection *conn;
@@ -733,7 +736,7 @@ DEFUN(smsqueue_trigger,
 DEFUN(smsqueue_max,
       smsqueue_max_cmd,
       "sms-queue max-pending <1-500>",
-      "SMS Queue\n" "SMS to attempt to deliver at the same time\n")
+      "SMS Queue\n" "SMS to deliver in parallel\n" "Amount\n")
 {
 	struct gsm_network *net = gsmnet_from_vty(vty);
 
@@ -755,7 +758,7 @@ DEFUN(smsqueue_clear,
 DEFUN(smsqueue_fail,
       smsqueue_fail_cmd,
       "sms-queue max-failure <1-500>",
-      "SMS Queue\n" "Set maximum amount of failures\n")
+      "SMS Queue\n" "Maximum amount of delivery failures\n" "Amount\n")
 {
 	struct gsm_network *net = gsmnet_from_vty(vty);
 
@@ -774,7 +777,7 @@ DEFUN(cfg_mncc_int, cfg_mncc_int_cmd,
 
 static struct cmd_node mncc_int_node = {
 	MNCC_INT_NODE,
-	"%s(mncc-int)#",
+	"%s(config-mncc-int)# ",
 	1,
 };
 
@@ -861,6 +864,8 @@ int bsc_vty_init_extra(void)
 	install_element(CONFIG_NODE, &cfg_mncc_int_cmd);
 	install_node(&mncc_int_node, config_write_mncc_int);
 	install_default(MNCC_INT_NODE);
+	install_element(MNCC_INT_NODE, &ournode_exit_cmd);
+	install_element(MNCC_INT_NODE, &ournode_end_cmd);
 	install_element(MNCC_INT_NODE, &mnccint_def_codec_f_cmd);
 	install_element(MNCC_INT_NODE, &mnccint_def_codec_h_cmd);
 

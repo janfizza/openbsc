@@ -7,36 +7,10 @@
 #include <osmocom/core/select.h>
 
 #include <openbsc/rest_octets.h>
-#include <osmocom/abis/e1_input.h>
 
 #define OBSC_NM_W_ACK_CB(__msgb) (__msgb)->cb[3]
 
 struct mncc_sock_state;
-
-/* the data structure stored in msgb->cb for openbsc apps */
-struct openbsc_msgb_cb {
-	unsigned char *bssgph;
-	unsigned char *llch;
-
-	/* Cell Identifier */
-	unsigned char *bssgp_cell_id;
-
-	/* Identifiers of a BTS, equal to 'struct bssgp_bts_ctx' */
-	uint16_t nsei;
-	uint16_t bvci;
-
-	/* Identifier of a MS (inside BTS), equal to 'struct sgsn_mm_ctx' */
-	uint32_t tlli;
-} __attribute__((packed));
-#define OBSC_MSGB_CB(__msgb)	((struct openbsc_msgb_cb *)&((__msgb)->cb[0]))
-#define msgb_tlli(__x)		OBSC_MSGB_CB(__x)->tlli
-#define msgb_nsei(__x)		OBSC_MSGB_CB(__x)->nsei
-#define msgb_bvci(__x)		OBSC_MSGB_CB(__x)->bvci
-#define msgb_gmmh(__x)		(__x)->l3h
-#define msgb_bssgph(__x)	OBSC_MSGB_CB(__x)->bssgph
-#define msgb_bssgp_len(__x)	((__x)->tail - (uint8_t *)msgb_bssgph(__x))
-#define msgb_bcid(__x)		OBSC_MSGB_CB(__x)->bssgp_cell_id
-#define msgb_llch(__x)		OBSC_MSGB_CB(__x)->llch
 
 #define OBSC_LINKID_CB(__msgb)	(__msgb)->cb[3]
 
@@ -216,6 +190,7 @@ enum gsm_auth_policy {
 };
 
 #define GSM_T3101_DEFAULT 10
+#define GSM_T3105_DEFAULT 40
 #define GSM_T3113_DEFAULT 60
 
 struct gsm_network {
@@ -286,11 +261,14 @@ struct gsm_network {
 	int pag_any_tch;
 
 	/* MSC data in case we are a true BSC */
-	struct osmo_msc_data *msc_data;
+	struct osmo_bsc_data *bsc_data;
 
 	/* subscriber related features */
 	int keep_subscr;
 	struct gsm_sms_queue *sms_queue;
+
+	/* control interface */
+	struct ctrl_handle *ctrl;
 };
 
 #define SMS_HDR_SIZE	128
@@ -333,10 +311,12 @@ struct gsm_bts *gsm_bts_by_lac(struct gsm_network *net, unsigned int lac,
 extern void *tall_bsc_ctx;
 extern int ipacc_rtp_direct;
 
+/* this actaully refers to the IPA transport, not the BTS model */
 static inline int is_ipaccess_bts(struct gsm_bts *bts)
 {
 	switch (bts->type) {
 	case GSM_BTS_TYPE_NANOBTS:
+	case GSM_BTS_TYPE_OSMO_SYSMO:
 		return 1;
 	default:
 		break;
@@ -387,5 +367,8 @@ struct gsm_bts_trx *gsm_bts_trx_by_nr(struct gsm_bts *bts, int nr);
 
 /* generic E1 line operations for all ISDN-based BTS. */
 extern struct e1inp_line_ops bts_isdn_e1inp_line_ops;
+
+extern const struct value_string bts_type_names[_NUM_GSM_BTS_TYPE+1];
+extern const struct value_string bts_type_descs[_NUM_GSM_BTS_TYPE+1];
 
 #endif /* _GSM_DATA_H */

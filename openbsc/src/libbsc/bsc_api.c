@@ -272,7 +272,7 @@ int bsc_api_init(struct gsm_network *network, struct bsc_api *api)
 
 /*! \brief process incoming 08.08 DTAP from MSC (send via BTS to MS) */
 int gsm0808_submit_dtap(struct gsm_subscriber_connection *conn,
-			struct msgb *msg, int link_id, int allow_sach)
+			struct msgb *msg, int link_id, int allow_sacch)
 {
 	uint8_t sapi;
 
@@ -289,7 +289,7 @@ int gsm0808_submit_dtap(struct gsm_subscriber_connection *conn,
 	msg->dst = msg->lchan->ts->trx->rsl_link;
 
 	/* If we are on a TCH and need to submit a SMS (on SAPI=3) we need to use the SACH */
-	if (allow_sach && sapi != 0) {
+	if (allow_sacch && sapi != 0) {
 		if (conn->lchan->type == GSM_LCHAN_TCH_F || conn->lchan->type == GSM_LCHAN_TCH_H)
 			link_id |= 0x40;
 	}
@@ -311,19 +311,62 @@ int gsm0808_submit_dtap(struct gsm_subscriber_connection *conn,
 	}
 }
 
+/*
+ * \brief Check if the given channel is compatible with the mode/fullrate
+ */
+static int chan_compat_with_mode(struct gsm_lchan *lchan, int chan_mode, int full_rate)
+{
+	switch (chan_mode) {
+	case GSM48_CMODE_SIGN:
+		/* signalling is always possible */
+		return 1;
+	case GSM48_CMODE_SPEECH_V1:
+	case GSM48_CMODE_SPEECH_AMR:
+	case GSM48_CMODE_DATA_3k6:
+	case GSM48_CMODE_DATA_6k0:
+		/* these services can all run on TCH/H, but we may have
+		 * an explicit override by the 'full_rate' argument */
+		switch (lchan->type) {
+		case GSM_LCHAN_TCH_F:
+			return 1;
+		case GSM_LCHAN_TCH_H:
+			if (full_rate)
+				return 0;
+			else
+				return 1;
+			break;
+		default:
+			return 0;
+		}
+		break;
+	case GSM48_CMODE_DATA_12k0:
+	case GSM48_CMODE_DATA_14k5:
+	case GSM48_CMODE_SPEECH_EFR:
+		/* these services all explicitly require a TCH/F */
+		if (lchan->type == GSM_LCHAN_TCH_F)
+			return 1;
+		else
+			return 0;
+		break;
+	}
+
+	return 0;
+}
+
 /**
  * Send a GSM08.08 Assignment Request. Right now this does not contain the
  * audio codec type or the allowed rates for the config. It is assumed that
- * this is for audio handling and that when we have a TCH it is capable of
- * handling the audio codec. In case AMR is used we will leave the multi
- * rate configuration to someone else.
+ * this is for audio handling only. In case the current channel does not allow
+ * the selected mode a new one will be allocated.
+ *
+ * TODO: Add multirate configuration, make it work for more than audio.
  */
 int gsm0808_assign_req(struct gsm_subscriber_connection *conn, int chan_mode, int full_rate)
 {
 	struct bsc_api *api;
 	api = conn->bts->network->bsc_api;
 
-	if (conn->lchan->type == GSM_LCHAN_SDCCH) {
+	if (!chan_compat_with_mode(conn->lchan, chan_mode, full_rate)) {
 		if (handle_new_assignment(conn, chan_mode, full_rate) != 0)
 			goto error;
 	} else {
@@ -418,6 +461,75 @@ static void handle_ass_fail(struct gsm_subscriber_connection *conn,
 			 rr_failure);
 }
 
+static void handle_classmark_chg(struct gsm_subscriber_connection *conn,
+				 struct msgb *msg)
+{
+	struct bsc_api *api = msg->lchan->ts->trx->bts->network->bsc_api;
+	struct gsm48_hdr *gh = msgb_l3(msg);
+	unsigned int payload_len = msgb_l3len(msg) - sizeof(*gh);
+	uint8_t cm2_len, cm3_len = 0;
+	uint8_t *cm2, *cm3 = NULL;
+
+	DEBUGP(DRR, "CLASSMARK CHANGE ");
+
+	/* classmark 2 */
+	cm2_len = gh->data[0];
+	cm2 = &gh->data[1];
+	DEBUGPC(DRR, "CM2(len=%u) ", cm2_len);
+
+	if (payload_len > cm2_len + 1) {
+		/* we must have a classmark3 */
+		if (gh->data[cm2_len+1] != 0x20) {
+			DEBUGPC(DRR, "ERR CM3 TAG\n");
+			return;
+		}
+		if (cm2_len > 3) {
+			DEBUGPC(DRR, "CM2 too long!\n");
+			return;
+		}
+
+		cm3_len = gh->data[cm2_len+2];
+		cm3 = &gh->data[cm2_len+3];
+		if (cm3_len > 14) {
+			DEBUGPC(DRR, "CM3 len %u too long!\n", cm3_len);
+			return;
+		}
+		DEBUGPC(DRR, "CM3(len=%u)\n", cm3_len);
+	}
+	api->classmark_chg(conn, cm2, cm2_len, cm3, cm3_len);
+}
+
+/* Chapter 9.1.16 Handover complete */
+static void handle_rr_ho_compl(struct msgb *msg)
+{
+	struct lchan_signal_data sig;
+	struct gsm48_hdr *gh = msgb_l3(msg);
+
+	DEBUGP(DRR, "HANDOVER COMPLETE cause = %s\n",
+		rr_cause_name(gh->data[0]));
+
+	sig.lchan = msg->lchan;
+	sig.mr = NULL;
+	osmo_signal_dispatch(SS_LCHAN, S_LCHAN_HANDOVER_COMPL, &sig);
+	/* FIXME: release old channel */
+}
+
+/* Chapter 9.1.17 Handover Failure */
+static void handle_rr_ho_fail(struct msgb *msg)
+{
+	struct lchan_signal_data sig;
+	struct gsm48_hdr *gh = msgb_l3(msg);
+
+	DEBUGP(DRR, "HANDOVER FAILED cause = %s\n",
+		rr_cause_name(gh->data[0]));
+
+	sig.lchan = msg->lchan;
+	sig.mr = NULL;
+	osmo_signal_dispatch(SS_LCHAN, S_LCHAN_HANDOVER_FAIL, &sig);
+	/* FIXME: release allocated new channel */
+}
+
+
 static void dispatch_dtap(struct gsm_subscriber_connection *conn,
 			  uint8_t link_id, struct msgb *msg)
 {
@@ -433,12 +545,38 @@ static void dispatch_dtap(struct gsm_subscriber_connection *conn,
 
 	gh = msgb_l3(msg);
 	pdisc = gh->proto_discr & 0x0f;
+
+	/* the idea is to handle all RR messages here, and only hand
+	 * MM/CC/SMS-CP/LCS up to the MSC.  Some messages like PAGING
+	 * RESPONSE or CM SERVICE REQUEST will not be covered here, as
+	 * they are only possible in the first L3 message of each L2
+	 * channel, i.e. 'conn' will not exist and gsm0408_rcvmsg()
+	 * will call api->compl_l3() for it */
 	switch (pdisc) {
 	case GSM48_PDISC_RR:
 		switch (gh->msg_type) {
+		case GSM48_MT_RR_GPRS_SUSP_REQ:
+			DEBUGP(DRR, "GRPS SUSPEND REQUEST\n");
+			break;
+		case GSM48_MT_RR_STATUS:
+			LOGP(DRR, LOGL_NOTICE, "RR STATUS (cause: %s)\n",
+				rr_cause_name(gh->data[0]));
+			break;
+		case GSM48_MT_RR_MEAS_REP:
+			/* This shouldn't actually end up here, as RSL treats
+			* L3 Info of 08.58 MEASUREMENT REPORT different by calling
+			* directly into gsm48_parse_meas_rep */
+			LOGP(DMEAS, LOGL_ERROR, "DIRECT GSM48 MEASUREMENT REPORT ?!? ");
+			break;
+		case GSM48_MT_RR_HANDO_COMPL:
+			handle_rr_ho_compl(msg);
+			break;
+		case GSM48_MT_RR_HANDO_FAIL:
+			handle_rr_ho_fail(msg);
+			break;
 		case GSM48_MT_RR_CIPH_M_COMPL:
 			if (api->cipher_mode_compl)
-				return api->cipher_mode_compl(conn, msg,
+				api->cipher_mode_compl(conn, msg,
 						conn->lchan->encr.alg_id);
 			break;
 		case GSM48_MT_RR_ASS_COMPL:
@@ -460,17 +598,31 @@ static void dispatch_dtap(struct gsm_subscriber_connection *conn,
 						  conn->lchan->encr.alg_id,
 						  chan_mode_to_speech(conn->lchan));
 			}
-			return;
 			break;
+		case GSM48_MT_RR_CLSM_CHG:
+			handle_classmark_chg(conn, msg);
+			break;
+		case GSM48_MT_RR_APP_INFO:
+			/* Passing RR APP INFO to MSC, not quite
+			 * according to spec */
+			if (api->dtap)
+				api->dtap(conn, link_id, msg);
+			break;
+		default:
+			/* Normally, a MSC should never receive RR
+			 * messages, but we'd rather forward what we
+			 * don't know than drop it... */
+			LOGP(DRR, LOGL_NOTICE, "BSC: Passing unknown 04.08 "
+			     "RR message type 0x%02x to MSC\n", gh->msg_type);
+			if (api->dtap)
+				api->dtap(conn, link_id, msg);
 		}
 		break;
-	case GSM48_PDISC_MM:
+	default:
+		if (api->dtap)
+			api->dtap(conn, link_id, msg);
 		break;
 	}
-
-	/* default case */
-	if (api->dtap)
-		api->dtap(conn, link_id, msg);
 }
 
 /*! \brief RSL has received a DATA INDICATION with L3 from MS */
@@ -497,7 +649,7 @@ int gsm0408_rcvmsg(struct msgb *msg, uint8_t link_id)
 		rc = BSC_API_CONN_POL_REJECT;
 		lchan->conn = subscr_con_allocate(msg->lchan);
 		if (!lchan->conn) {
-			lchan_release(lchan, 0, 0);
+			lchan_release(lchan, 1, 0);
 			return -1;
 		}
 
@@ -507,7 +659,7 @@ int gsm0408_rcvmsg(struct msgb *msg, uint8_t link_id)
 		if (rc != BSC_API_CONN_POL_ACCEPT) {
 			lchan->conn->lchan = NULL;
 			subscr_con_free(lchan->conn);
-			lchan_release(lchan, 0, 0);
+			lchan_release(lchan, 1, 0);
 		}
 	}
 

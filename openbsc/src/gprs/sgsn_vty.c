@@ -28,7 +28,7 @@
 
 #include <openbsc/debug.h>
 #include <openbsc/sgsn.h>
-#include <openbsc/gprs_ns.h>
+#include <osmocom/gprs/gprs_ns.h>
 #include <openbsc/gprs_sgsn.h>
 #include <openbsc/vty.h>
 #include <openbsc/gsm_04_08_gprs.h>
@@ -106,7 +106,7 @@ static char *gprs_pdpaddr2str(uint8_t *pdpa, uint8_t len)
 
 static struct cmd_node sgsn_node = {
 	SGSN_NODE,
-	"%s(sgsn)#",
+	"%s(config-sgsn)# ",
 	1,
 };
 

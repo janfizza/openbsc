@@ -4,7 +4,7 @@
 
 /* (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
  * (C) 2009 by Harald Welte <laforge@gnumonks.org>
- * (C) 2010 by Holger Hans Peter Freyther <zecke@selfish.org>
+ * (C) 2010-2012 by Holger Hans Peter Freyther <zecke@selfish.org>
  * (C) 2010 by On-Waves
  *
  * All Rights Reserved
@@ -32,19 +32,23 @@
 #include <time.h>
 #include <netinet/in.h>
 
+#include "bscconfig.h"
+
 #include <osmocom/core/msgb.h>
+#include <osmocom/core/talloc.h>
+
 #include <osmocom/gsm/tlv.h>
+#include <osmocom/gsm/gsm_utils.h>
+
 #include <openbsc/debug.h>
 #include <openbsc/gsm_data.h>
 #include <openbsc/db.h>
 #include <openbsc/gsm_subscriber.h>
 #include <openbsc/gsm_04_11.h>
 #include <openbsc/gsm_04_08.h>
-#include <osmocom/gsm/gsm_utils.h>
 #include <openbsc/abis_rsl.h>
 #include <openbsc/signal.h>
 #include <openbsc/db.h>
-#include <osmocom/core/talloc.h>
 #include <openbsc/transaction.h>
 #include <openbsc/paging.h>
 #include <openbsc/bsc_rll.h>
@@ -279,7 +283,12 @@ static void gsm340_gen_scts(uint8_t *scts, time_t time)
 	*scts++ = bcdify(tm->tm_hour);
 	*scts++ = bcdify(tm->tm_min);
 	*scts++ = bcdify(tm->tm_sec);
+#ifdef HAVE_TM_GMTOFF_IN_TM
 	*scts++ = bcdify(tm->tm_gmtoff/(60*15));
+#else
+#warning find a portable way to obtain timezone offset
+	*scts++ = 0;
+#endif
 }
 
 /* Decode 03.40 TP-SCTS (into utc/gmt timestamp) */
@@ -300,7 +309,9 @@ static time_t gsm340_scts(uint8_t *scts)
 	tm.tm_sec  = unbcdify(*scts++);
 	/* according to gsm 03.40 time zone is
 	   "expressed in quarters of an hour" */
+#ifdef HAVE_TM_GMTOFF_IN_TM
 	tm.tm_gmtoff = unbcdify(*scts++) * 15*60;
+#endif
 
 	return mktime(&tm);
 }

@@ -10,9 +10,10 @@
 #define CTRL_CMD_HANDLED	0
 #define CTRL_CMD_REPLY		1
 
+struct ctrl_handle;
+
 enum ctrl_node_type {
 	CTRL_NODE_ROOT,	/* Root elements */
-	CTRL_NODE_NET,	/* Network specific (net.) */
 	CTRL_NODE_BTS,	/* BTS specific (net.btsN.) */
 	CTRL_NODE_TRX,	/* TRX specific (net.btsN.trxM.) */
 	CTRL_NODE_TS,	/* TS specific (net.btsN.trxM.tsI.) */
@@ -75,10 +76,12 @@ int ctrl_cmd_exec(vector vline, struct ctrl_cmd *command, vector node, void *dat
 int ctrl_cmd_install(enum ctrl_node_type node, struct ctrl_cmd_element *cmd);
 int ctrl_cmd_handle(struct ctrl_cmd *cmd, void *data);
 int ctrl_cmd_send(struct osmo_wqueue *queue, struct ctrl_cmd *cmd);
+int ctrl_cmd_send_to_all(struct ctrl_handle *ctrl, struct ctrl_cmd *cmd);
 struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg);
 struct msgb *ctrl_cmd_make(struct ctrl_cmd *cmd);
 struct ctrl_cmd *ctrl_cmd_cpy(void *ctx, struct ctrl_cmd *cmd);
 struct ctrl_cmd *ctrl_cmd_create(void *ctx, enum ctrl_type);
+struct ctrl_cmd *ctrl_cmd_trap(struct ctrl_cmd *cmd);
 
 #define CTRL_CMD_DEFINE_RANGE(cmdname, cmdstr, dtype, element, min, max) \
 static int get_##cmdname(struct ctrl_cmd *cmd, void *data) \
@@ -150,6 +153,5 @@ struct ctrl_cmd_element cmd_##cmdname = { \
 }
 
 struct gsm_network;
-int controlif_setup(struct gsm_network *gsmnet, uint16_t port);
 
 #endif /* _CONTROL_CMD_H */

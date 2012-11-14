@@ -1,5 +1,5 @@
-/* (C) 2009-2010 by Holger Hans Peter Freyther <zecke@selfish.org>
- * (C) 2009-2010 by On-Waves
+/* (C) 2009-2011 by Holger Hans Peter Freyther <zecke@selfish.org>
+ * (C) 2009-2011 by On-Waves
  * All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify
@@ -45,18 +45,18 @@
 	} \
 	bsc_queue_for_msc(conn->sccp_con, resp);
 
-static uint16_t get_network_code_for_msc(struct gsm_network *net)
+static uint16_t get_network_code_for_msc(struct osmo_msc_data *msc)
 {
-	if (net->msc_data->core_ncc != -1)
-		return net->msc_data->core_ncc;
-	return net->network_code;
+	if (msc->core_ncc != -1)
+		return msc->core_ncc;
+	return msc->network->network_code;
 }
 
-static uint16_t get_country_code_for_msc(struct gsm_network *net)
+static uint16_t get_country_code_for_msc(struct osmo_msc_data *msc)
 {
-	if (net->msc_data->core_mcc != -1)
-		return net->msc_data->core_mcc;
-	return net->country_code;
+	if (msc->core_mcc != -1)
+		return msc->core_mcc;
+	return msc->network->country_code;
 }
 
 static void bsc_sapi_n_reject(struct gsm_subscriber_connection *conn, int dlci)
@@ -89,14 +89,25 @@ static int bsc_compl_l3(struct gsm_subscriber_connection *conn, struct msgb *msg
 			uint16_t chosen_channel)
 {
 	struct msgb *resp;
-	uint16_t network_code = get_network_code_for_msc(conn->bts->network);
-	uint16_t country_code = get_country_code_for_msc(conn->bts->network);
+	struct osmo_msc_data *msc;
+	uint16_t network_code;
+	uint16_t country_code;
 
 	LOGP(DMSC, LOGL_INFO, "Tx MSC COMPL L3\n");
 
+	/* find the MSC link we want to use */
+	msc = bsc_find_msc(conn, msg);
+	if (!msc) {
+		LOGP(DMSC, LOGL_ERROR, "Failed to find a MSC for a connection.\n");
+		return -1;
+	}
+
 	/* allocate resource for a new connection */
-	if (bsc_create_new_connection(conn) != 0)
+	if (bsc_create_new_connection(conn, msc) != 0)
 		return BSC_API_CONN_POL_REJECT;
+
+	network_code = get_network_code_for_msc(conn->sccp_con->msc);
+	country_code = get_country_code_for_msc(conn->sccp_con->msc);
 
 	bsc_scan_bts_msg(conn, msg);
 	resp = gsm0808_create_layer3(msg, network_code, country_code,
@@ -183,6 +194,18 @@ static int bsc_clear_request(struct gsm_subscriber_connection *conn, uint32_t ca
 	return 1;
 }
 
+static void bsc_cm_update(struct gsm_subscriber_connection *conn,
+			  const uint8_t *cm2, uint8_t cm2_len,
+			  const uint8_t *cm3, uint8_t cm3_len)
+{
+	struct msgb *resp;
+	return_when_not_connected(conn);
+
+	resp = gsm0808_create_classmark_update(cm2, cm2_len, cm3, cm3_len);
+
+	queue_msg_or_return(resp);
+}
+
 static struct bsc_api bsc_handler = {
 	.sapi_n_reject = bsc_sapi_n_reject,
 	.cipher_mode_compl = bsc_cipher_mode_compl,
@@ -191,6 +214,7 @@ static struct bsc_api bsc_handler = {
 	.assign_compl = bsc_assign_compl,
 	.assign_fail = bsc_assign_fail,
 	.clear_request = bsc_clear_request,
+	.classmark_chg = bsc_cm_update,
 };
 
 struct bsc_api *osmo_bsc_api()

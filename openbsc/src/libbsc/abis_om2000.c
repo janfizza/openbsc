@@ -788,6 +788,9 @@ static void signal_op_state(struct gsm_bts *bts, struct abis_om2k_mo *mo)
 	struct gsm_nm_state *nm_state = mo2nm_state(bts, mo);
 	struct nm_statechg_signal_data nsd;
 
+	if (!nm_state)
+		return;
+
 	nsd.bts = bts;
 	nsd.obj = mo2obj(bts, mo);
 	nsd.old_state = nm_state;
@@ -801,7 +804,6 @@ static int abis_om2k_sendmsg(struct gsm_bts *bts, struct msgb *msg)
 {
 	struct abis_om2k_hdr *o2h;
 	struct gsm_bts_trx *trx;
-	int to_trx_oml;
 
 	msg->l2h = msg->data;
 	o2h = (struct abis_om2k_hdr *) msg->l2h;
@@ -820,6 +822,7 @@ static int abis_om2k_sendmsg(struct gsm_bts *bts, struct msgb *msg)
 				"non-existing TRX\n", om2k_mo_name(&o2h->mo));
 			return -ENODEV;
 		}
+		msg->dst = trx->oml_link;
 		break;
 	case OM2K_MO_CLS_TS:
 		/* Route through per-TRX OML Link to the appropriate TRX */
@@ -829,13 +832,13 @@ static int abis_om2k_sendmsg(struct gsm_bts *bts, struct msgb *msg)
 				"non-existing TRX\n", om2k_mo_name(&o2h->mo));
 			return -ENODEV;
 		}
+		msg->dst = trx->oml_link;
 		break;
 	default:
 		/* Route through the IXU/DXU OML Link */
-		trx = bts->c0;
+		msg->dst = bts->oml_link;
 		break;
 	}
-	msg->dst = trx->oml_link;
 
 	return _abis_nm_sendmsg(msg);
 }
@@ -996,6 +999,9 @@ int abis_om2k_tx_is_conf_req(struct gsm_bts *bts)
 
 	talloc_free(cg);
 
+	DEBUGP(DNM, "Tx MO=%s %s\n", om2k_mo_name(&om2k_mo_is),
+		get_value_string(om2k_msgcode_vals, OM2K_MSGT_IS_CONF_REQ));
+
 	return abis_om2k_sendmsg(bts, msg);
 }
 
@@ -1012,6 +1018,9 @@ int abis_om2k_tx_con_conf_req(struct gsm_bts *bts, uint8_t *data,
 	msgb_tv_put(msg, OM2K_DEI_END_LIST_NR, 1);
 
 	msgb_tlv_put(msg, OM2K_DEI_CON_CONN_LIST, len, data);
+
+	DEBUGP(DNM, "Tx MO=%s %s\n", om2k_mo_name(&om2k_mo_con),
+		get_value_string(om2k_msgcode_vals, OM2K_MSGT_CON_CONF_REQ));
 
 	return abis_om2k_sendmsg(bts, msg);
 }
@@ -1095,6 +1104,9 @@ int abis_om2k_tx_tf_conf_req(struct gsm_bts *bts)
 	msgb_tv_put(msg, OM2K_DEI_TF_SYNC_SRC, 0x00);
 	msgb_tv_fixed_put(msg, OM2K_DEI_FS_OFFSET,
 			  sizeof(fs_offset_undef), fs_offset_undef);
+
+	DEBUGP(DNM, "Tx MO=%s %s\n", om2k_mo_name(&om2k_mo_tf),
+		get_value_string(om2k_msgcode_vals, OM2K_MSGT_TF_CONF_REQ));
 
 	return abis_om2k_sendmsg(bts, msg);
 }
@@ -1187,7 +1199,7 @@ int abis_om2k_tx_ts_conf_req(struct gsm_bts_trx_ts *ts)
 		msgb_tv_put(msg, OM2K_DEI_CCCH_OPTIONS, 0x01);
 		break;
 	case GSM_PCHAN_CCCH_SDCCH4:
-		msgb_tv_put(msg, OM2K_DEI_T3105, 0x04);
+		msgb_tv_put(msg, OM2K_DEI_T3105, ts->trx->bts->network->T3105 / 10);
 		msgb_tv_put(msg, OM2K_DEI_NY1, 35);
 		msgb_tv_put(msg, OM2K_DEI_BA_PA_MFRMS, 0x06);
 		msgb_tv_put(msg, OM2K_DEI_CBCH_INDICATOR, 0);
@@ -1201,7 +1213,7 @@ int abis_om2k_tx_ts_conf_req(struct gsm_bts_trx_ts *ts)
 				  sizeof(icm_bound_params), icm_bound_params);
 		break;
 	case GSM_PCHAN_SDCCH8_SACCH8C:
-		msgb_tv_put(msg, OM2K_DEI_T3105, 0x04);
+		msgb_tv_put(msg, OM2K_DEI_T3105, ts->trx->bts->network->T3105 / 10);
 		msgb_tv_put(msg, OM2K_DEI_NY1, 35);
 		msgb_tv_put(msg, OM2K_DEI_CBCH_INDICATOR, 0);
 		msgb_tv_put(msg, OM2K_DEI_TSC, ts->trx->bts->tsc);
@@ -1211,7 +1223,7 @@ int abis_om2k_tx_ts_conf_req(struct gsm_bts_trx_ts *ts)
 				  sizeof(icm_bound_params), icm_bound_params);
 		break;
 	default:
-		msgb_tv_put(msg, OM2K_DEI_T3105, 0x04);
+		msgb_tv_put(msg, OM2K_DEI_T3105, ts->trx->bts->network->T3105 / 10);
 		msgb_tv_put(msg, OM2K_DEI_NY1, 35);
 		msgb_tv_put(msg, OM2K_DEI_TSC, ts->trx->bts->tsc);
 		/* Disable RF RESOURCE INDICATION on idle channels */

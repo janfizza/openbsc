@@ -39,6 +39,7 @@
 #include <sys/types.h>
 
 #include <openbsc/control_cmd.h>
+#include <openbsc/control_if.h>
 #include <openbsc/debug.h>
 #include <openbsc/gsm_data.h>
 #include <openbsc/ipaccess.h>
@@ -62,12 +63,22 @@
 #include <osmocom/abis/e1_input.h>
 #include <osmocom/abis/ipa.h>
 
-struct ctrl_handle {
-	struct osmo_fd listen_fd;
-	struct gsm_network *gsmnet;
-};
-
 vector ctrl_node_vec;
+
+/* Send command to all  */
+int ctrl_cmd_send_to_all(struct ctrl_handle *ctrl, struct ctrl_cmd *cmd)
+{
+	struct ctrl_connection *ccon;
+	int ret = 0;
+
+	llist_for_each_entry(ccon, &ctrl->ccon_list, list_entry) {
+		if (ccon == cmd->ccon)
+			continue;
+		if (ctrl_cmd_send(&ccon->write_queue, cmd))
+			ret++;
+	}
+	return ret;
+}
 
 int ctrl_cmd_send(struct osmo_wqueue *queue, struct ctrl_cmd *cmd)
 {
@@ -91,13 +102,45 @@ int ctrl_cmd_send(struct osmo_wqueue *queue, struct ctrl_cmd *cmd)
 	return ret;
 }
 
+struct ctrl_cmd *ctrl_cmd_trap(struct ctrl_cmd *cmd)
+{
+	struct ctrl_cmd *trap;
+
+	trap = ctrl_cmd_cpy(tall_bsc_ctx, cmd);
+	if (!trap)
+		return NULL;
+
+	trap->ccon = cmd->ccon;
+	trap->type = CTRL_TYPE_TRAP;
+	return trap;
+}
+
+static int get_num(vector vline, int i, long *num)
+{
+	char *token, *tmp;
+
+	if (i >= vector_active(vline))
+		return 0;
+	token = vector_slot(vline, i);
+
+	errno = 0;
+	if (token[0] == '\0')
+		return 0;
+
+	*num = strtol(token, &tmp, 10);
+	if (tmp[0] != '\0' || errno != 0)
+		return 0;
+
+	return 1;
+}
+
 int ctrl_cmd_handle(struct ctrl_cmd *cmd, void *data)
 {
 	char *token, *request;
-	int num, i, j, ret, node;
-	struct gsm_network *gsmnet = data;
+	long num;
+	int i, j, ret, node;
 
-	struct gsm_network *net = NULL;
+	struct gsm_network *net = data;
 	struct gsm_bts *bts = NULL;
 	struct gsm_bts_trx *trx = NULL;
 	struct gsm_bts_trx_ts *ts = NULL;
@@ -105,8 +148,8 @@ int ctrl_cmd_handle(struct ctrl_cmd *cmd, void *data)
 
 	ret = CTRL_CMD_ERROR;
 	cmd->reply = "Someone forgot to fill in the reply.";
-	cmd->node = NULL;
 	node = CTRL_NODE_ROOT;
+	cmd->node = net;
 
 	request = talloc_strdup(tall_bsc_ctx, cmd->variable);
 	if (!request)
@@ -119,46 +162,51 @@ int ctrl_cmd_handle(struct ctrl_cmd *cmd, void *data)
 
 	vline = cmd_make_strvec(request);
 	talloc_free(request);
-	if (!vline)
+	if (!vline) {
+		cmd->reply = "cmd_make_strvec failed.";
 		goto err;
+	}
 
 	for (i=0;i<vector_active(vline);i++) {
 		token = vector_slot(vline, i);
 		/* TODO: We need to make sure that the following chars are digits
 		 * and/or use strtol to check if number conversion was successful
 		 * Right now something like net.bts_stats will not work */
-		if (!strcmp(token, "net")) {
-			net = gsmnet;
+		if (!strcmp(token, "bts")) {
 			if (!net)
-				break;
-			cmd->node = net;
-			node = CTRL_NODE_NET;
-		} else if (!strncmp(token, "bts", 3)) {
-			if (!net)
-				break;
-			num = atoi(&token[3]);
+				goto err_missing;
+			i++;
+			if (!get_num(vline, i, &num))
+				goto err_index;
+
 			bts = gsm_bts_num(net, num);
 			if (!bts)
-				break;
+				goto err_missing;
 			cmd->node = bts;
 			node = CTRL_NODE_BTS;
-		} else if (!strncmp(token, "trx", 3)) {
+		} else if (!strcmp(token, "trx")) {
 			if (!bts)
-				break;
-			num = atoi(&token[3]);
+				goto err_missing;
+			i++;
+			if (!get_num(vline, i, &num))
+				goto err_index;
+
 			trx = gsm_bts_trx_num(bts, num);
 			if (!trx)
-				break;
+				goto err_missing;
 			cmd->node = trx;
 			node = CTRL_NODE_TRX;
-		} else if (!strncmp(token, "ts", 2)) {
+		} else if (!strcmp(token, "ts")) {
 			if (!trx)
-				break;
-			num = atoi(&token[2]);
+				goto err_missing;
+			i++;
+			if (!get_num(vline, i, &num))
+				goto err_index;
+
 			if ((num >= 0) && (num < TRX_NR_TS))
 				ts = &trx->ts[num];
 			if (!ts)
-				break;
+				goto err_missing;
 			cmd->node = ts;
 			node = CTRL_NODE_TS;
 		} else {
@@ -172,7 +220,7 @@ int ctrl_cmd_handle(struct ctrl_cmd *cmd, void *data)
 			cmds_vec = vector_lookup(ctrl_node_vec, node);
 
 			if (!cmds_vec) {
-				cmd->reply = "Command not found";
+				cmd->reply = "Command not found.";
 				vector_free(cmdvec);
 				break;
 			}
@@ -182,6 +230,9 @@ int ctrl_cmd_handle(struct ctrl_cmd *cmd, void *data)
 			vector_free(cmdvec);
 			break;
 		}
+
+		if (i+1 == vector_active(vline))
+			cmd->reply = "Command not present.";
 	}
 
 	cmd_free_strvec(vline);
@@ -190,12 +241,24 @@ err:
 	if (ret == CTRL_CMD_ERROR)
 		cmd->type = CTRL_TYPE_ERROR;
 	return ret;
+
+err_missing:
+	cmd_free_strvec(vline);
+	cmd->type = CTRL_TYPE_ERROR;
+	cmd->reply = "Error while resolving object";
+	return ret;
+err_index:
+	cmd_free_strvec(vline);
+	cmd->type = CTRL_TYPE_ERROR;
+	cmd->reply = "Error while parsing the index.";
+	return ret;
 }
 
 static void control_close_conn(struct ctrl_connection *ccon)
 {
 	close(ccon->write_queue.bfd.fd);
 	osmo_fd_unregister(&ccon->write_queue.bfd);
+	llist_del(&ccon->list_entry);
 	if (ccon->closed_cb)
 		ccon->closed_cb(ccon);
 	talloc_free(ccon);
@@ -300,6 +363,7 @@ static struct ctrl_connection *ctrl_connection_alloc(void *ctx)
 static int listen_fd_cb(struct osmo_fd *listen_bfd, unsigned int what)
 {
 	int ret, fd, on;
+	struct ctrl_handle *ctrl;
 	struct ctrl_connection *ccon;
 	struct sockaddr_in sa;
 	socklen_t sa_len = sizeof(sa);
@@ -330,7 +394,8 @@ static int listen_fd_cb(struct osmo_fd *listen_bfd, unsigned int what)
 		return -1;
 	}
 
-	ccon->write_queue.bfd.data = listen_bfd->data;
+	ctrl = listen_bfd->data;
+	ccon->write_queue.bfd.data = ctrl;
 	ccon->write_queue.bfd.fd = fd;
 	ccon->write_queue.bfd.when = BSC_FD_READ;
 	ccon->write_queue.read_cb = handle_control_read;
@@ -342,6 +407,8 @@ static int listen_fd_cb(struct osmo_fd *listen_bfd, unsigned int what)
 		close(ccon->write_queue.bfd.fd);
 		talloc_free(ccon);
 	}
+
+	llist_add(&ccon->list_entry, &ctrl->ccon_list);
 
 	return ret;
 }
@@ -518,7 +585,7 @@ static int get_rate_ctr(struct ctrl_cmd *cmd, void *data)
 
 	talloc_free(dup);
 
-	cmd->reply = talloc_asprintf(cmd, "%lu", get_rate_ctr_value(ctr, intv));
+	cmd->reply = talloc_asprintf(cmd, "%"PRIu64, get_rate_ctr_value(ctr, intv));
 	if (!cmd->reply)
 		goto oom;
 
@@ -599,31 +666,41 @@ static int verify_counter(struct ctrl_cmd *cmd, const char *value, void *data)
 	return 0;
 }
 
-int controlif_setup(struct gsm_network *gsmnet, uint16_t port)
+struct ctrl_handle *controlif_setup(struct gsm_network *gsmnet, uint16_t port)
 {
 	int ret;
 	struct ctrl_handle *ctrl;
 
 	ctrl = talloc_zero(tall_bsc_ctx, struct ctrl_handle);
 	if (!ctrl)
-		return -ENOMEM;
+		return NULL;
+
+	INIT_LLIST_HEAD(&ctrl->ccon_list);
 
 	ctrl->gsmnet = gsmnet;
 
 	ctrl_node_vec = vector_init(5);
 	if (!ctrl_node_vec)
-		return -ENOMEM;
+		goto err;
 
 	/* Listen for control connections */
 	ret = make_sock(&ctrl->listen_fd, IPPROTO_TCP, INADDR_LOOPBACK, port,
 			0, listen_fd_cb, ctrl);
-	if (ret < 0) {
-		talloc_free(ctrl);
-		return ret;
-	}
+	if (ret < 0)
+		goto err_vec;
 
-	ctrl_cmd_install(CTRL_NODE_ROOT, &cmd_rate_ctr);
-	ctrl_cmd_install(CTRL_NODE_ROOT, &cmd_counter);
+	ret = ctrl_cmd_install(CTRL_NODE_ROOT, &cmd_rate_ctr);
+	if (ret)
+		goto err_vec;
+	ret = ctrl_cmd_install(CTRL_NODE_ROOT, &cmd_counter);
+	if (ret)
+		goto err_vec;
 
-	return ret;
+	return ctrl;
+err_vec:
+	vector_free(ctrl_node_vec);
+	ctrl_node_vec = NULL;
+err:
+	talloc_free(ctrl);
+	return NULL;
 }

@@ -20,6 +20,7 @@
  *
  */
 
+#include <inttypes.h>
 
 #include <arpa/inet.h>
 
@@ -98,23 +99,22 @@ static inline struct msgb *hsl_alloc_msgb(void)
 static int hslfemto_bootstrap_om(struct gsm_bts *bts)
 {
 	struct msgb *msg;
-	uint8_t *cur;
 
 	msg = hsl_alloc_msgb();
-	cur = msgb_put(msg, sizeof(l1_msg));
+	msgb_put(msg, sizeof(l1_msg));
 	memcpy(msg->data, l1_msg, sizeof(l1_msg));
 	msg->dst = bts->c0->rsl_link;
 	abis_rsl_sendmsg(msg);
 
 #if 1
 	msg = hsl_alloc_msgb();
-	cur = msgb_put(msg, sizeof(conn_trau_msg));
+	msgb_put(msg, sizeof(conn_trau_msg));
 	memcpy(msg->data, conn_trau_msg, sizeof(conn_trau_msg));
 	msg->dst = bts->c0->rsl_link;
 	abis_rsl_sendmsg(msg);
 #endif
 	msg = hsl_alloc_msgb();
-	cur = msgb_put(msg, sizeof(conn_trau_msg2));
+	msgb_put(msg, sizeof(conn_trau_msg2));
 	memcpy(msg->data, conn_trau_msg2, sizeof(conn_trau_msg2));
 	msg->dst = bts->c0->rsl_link;
 	abis_rsl_sendmsg(msg);
@@ -123,7 +123,7 @@ static int hslfemto_bootstrap_om(struct gsm_bts *bts)
 	oml_arfcn_bsic[13] = bts->bsic;
 
 	msg = hsl_alloc_msgb();
-	cur = msgb_put(msg, sizeof(oml_arfcn_bsic));
+	msgb_put(msg, sizeof(oml_arfcn_bsic));
 	memcpy(msg->data, oml_arfcn_bsic, sizeof(oml_arfcn_bsic));
 	msg->dst = bts->c0->rsl_link;
 	abis_sendmsg(msg);
@@ -205,10 +205,10 @@ hsl_sign_link_up(void *unit_data, struct e1inp_line *line,
 	bts = find_bts_by_serno(hsl_gsmnet, dev->serno);
 	if (!bts) {
 		LOGP(DLINP, LOGL_ERROR, "Unable to find BTS config for "
-				"serial number %lx\n", dev->serno);
+				"serial number %"PRIx64"\n", dev->serno);
 		return NULL;
 	}
-	DEBUGP(DLINP, "Identified HSL BTS Serial Number %lx\n", dev->serno);
+	DEBUGP(DLINP, "Identified HSL BTS Serial Number %"PRIx64"\n", dev->serno);
 
 	/* we shouldn't hardcode it, but HSL femto also hardcodes it... */
 	bts->oml_tei = 255;
@@ -229,12 +229,9 @@ hsl_sign_link_up(void *unit_data, struct e1inp_line *line,
 
 void hsl_drop_oml(struct gsm_bts *bts)
 {
-	struct e1inp_line *line;
-
 	if (!bts->oml_link)
 		return;
 
-	line = bts->oml_link->ts->line;
 	e1inp_sign_link_destroy(bts->oml_link);
 	bts->oml_link = NULL;
 

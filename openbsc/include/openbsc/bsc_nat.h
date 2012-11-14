@@ -295,6 +295,10 @@ struct bsc_nat {
 	struct llist_head smsc_rewr;
 	char *tpdest_match_name;
 	struct llist_head tpdest_match;
+	char *sms_clear_tp_srr_name;
+	struct llist_head sms_clear_tp_srr;
+	char *sms_num_rewr_name;
+	struct llist_head sms_num_rewr;
 
 	/* USSD messages  we want to match */
 	char *ussd_lst_name;
@@ -310,6 +314,9 @@ struct bsc_nat {
 
 	/* statistics */
 	struct bsc_nat_statistics stats;
+
+	/* control interface */
+	struct ctrl_handle *ctrl;
 };
 
 struct bsc_nat_ussd_con {
@@ -433,5 +440,9 @@ struct bsc_nat_num_rewr_entry {
 };
 
 void bsc_nat_num_rewr_entry_adapt(void *ctx, struct llist_head *head, const struct osmo_config_list *);
+
+struct ctrl_handle *bsc_nat_controlif_setup(struct bsc_nat *nat, int port);
+void bsc_nat_ctrl_del_pending(struct bsc_cmd_list *pending);
+int bsc_nat_handle_ctrlif_msg(struct bsc_connection *bsc, struct msgb *msg);
 
 #endif

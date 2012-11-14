@@ -147,9 +147,8 @@ gDEFUN(ournode_exit,
 	case MGCP_NODE:
 	case GBPROXY_NODE:
 	case SGSN_NODE:
-	case NS_NODE:
-	case BSSGP_NODE:
 	case NAT_NODE:
+	case BSC_NODE:
 		vty->node = CONFIG_NODE;
 		vty->index = NULL;
 		break;
@@ -191,13 +190,13 @@ gDEFUN(ournode_end,
 	case TRUNK_NODE:
 	case GBPROXY_NODE:
 	case SGSN_NODE:
-	case NS_NODE:
 	case VTY_NODE:
 	case NAT_NODE:
 	case NAT_BSC_NODE:
 	case PGROUP_NODE:
 	case MSC_NODE:
 	case MNCC_INT_NODE:
+	case BSC_NODE:
 		vty_config_unlock(vty);
 		vty->node = ENABLE_NODE;
 		vty->index = NULL;

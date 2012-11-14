@@ -79,20 +79,22 @@ struct gsm_network *gsm_network_init(uint16_t country_code, uint16_t network_cod
 	if (!net)
 		return NULL;
 
-	net->msc_data = talloc_zero(net, struct osmo_msc_data);
-	if (!net->msc_data) {
+	net->bsc_data = talloc_zero(net, struct osmo_bsc_data);
+	if (!net->bsc_data) {
 		talloc_free(net);
 		return NULL;
 	}
 
 	/* Init back pointer */
-	net->msc_data->network = net;
+	net->bsc_data->network = net;
+	INIT_LLIST_HEAD(&net->bsc_data->mscs);
 
 	net->country_code = country_code;
 	net->network_code = network_code;
 	net->num_bts = 0;
 	net->reject_cause = GSM48_REJECT_ROAMING_NOT_ALLOWED;
 	net->T3101 = GSM_T3101_DEFAULT;
+	net->T3105 = GSM_T3105_DEFAULT;
 	net->T3113 = GSM_T3113_DEFAULT;
 	/* FIXME: initialize all other timers! */
 
@@ -141,13 +143,6 @@ struct gsm_network *gsm_network_init(uint16_t country_code, uint16_t network_cod
 
 	net->mncc_recv = mncc_recv;
 
-	INIT_LLIST_HEAD(&net->msc_data->dests);
-	net->msc_data->ping_timeout = 20;
-	net->msc_data->pong_timeout = 5;
-	net->msc_data->core_ncc = -1;
-	net->msc_data->core_mcc = -1;
-	net->msc_data->rtp_base = 4000;
-
 	gsm_net_update_ctype(net);
 
 	return net;
@@ -187,24 +182,36 @@ struct gsm_bts *gsm_bts_neighbor(const struct gsm_bts *bts,
 	return NULL;
 }
 
-static const struct value_string bts_types[] = {
+const struct value_string bts_type_names[_NUM_GSM_BTS_TYPE+1] = {
 	{ GSM_BTS_TYPE_UNKNOWN,	"unknown" },
 	{ GSM_BTS_TYPE_BS11,	"bs11" },
 	{ GSM_BTS_TYPE_NANOBTS,	"nanobts" },
 	{ GSM_BTS_TYPE_RBS2000,	"rbs2000" },
 	{ GSM_BTS_TYPE_HSL_FEMTO, "hsl_femto" },
 	{ GSM_BTS_TYPE_NOKIA_SITE, "nokia_site" },
+	{ GSM_BTS_TYPE_OSMO_SYSMO, "sysmobts" },
 	{ 0,			NULL }
+};
+
+const struct value_string bts_type_descs[_NUM_GSM_BTS_TYPE+1] = {
+	{ GSM_BTS_TYPE_UNKNOWN,		"Unknown BTS Type" },
+	{ GSM_BTS_TYPE_BS11,		"Siemens BTS (BS-11 or compatible)" },
+	{ GSM_BTS_TYPE_NANOBTS,		"ip.access nanoBTS or compatible" },
+	{ GSM_BTS_TYPE_RBS2000,		"Ericsson RBS2000 Series" },
+	{ GSM_BTS_TYPE_HSL_FEMTO,	"HSL 2.75G femto" },
+	{ GSM_BTS_TYPE_NOKIA_SITE,	"Nokia {Metro,Ultra,In}Site" },
+	{ GSM_BTS_TYPE_OSMO_SYSMO,	"sysmocom sysmoBTS" },
+	{ 0,				NULL }
 };
 
 enum gsm_bts_type parse_btstype(const char *arg)
 {
-	return get_string_value(bts_types, arg);
+	return get_string_value(bts_type_names, arg);
 }
 
 const char *btstype2str(enum gsm_bts_type type)
 {
-	return get_value_string(bts_types, type);
+	return get_value_string(bts_type_names, type);
 }
 
 struct gsm_bts_trx *gsm_bts_trx_by_nr(struct gsm_bts *bts, int nr)
@@ -343,16 +350,19 @@ int gsm_set_bts_type(struct gsm_bts *bts, enum gsm_bts_type type)
 	case GSM_BTS_TYPE_HSL_FEMTO:
 		bts->c0->rsl_tei = 0;
 	case GSM_BTS_TYPE_NANOBTS:
+	case GSM_BTS_TYPE_OSMO_SYSMO:
 		/* Set the default OML Stream ID to 0xff */
 		bts->oml_tei = 0xff;
 		bts->c0->nominal_power = 23;
 		break;
-	case GSM_BTS_TYPE_BS11:
-	case GSM_BTS_TYPE_UNKNOWN:
-		break;
 	case GSM_BTS_TYPE_RBS2000:
 		INIT_LLIST_HEAD(&bts->rbs2000.is.conn_groups);
 		INIT_LLIST_HEAD(&bts->rbs2000.con.conn_groups);
+		break;
+	case GSM_BTS_TYPE_BS11:
+	case GSM_BTS_TYPE_UNKNOWN:
+	case GSM_BTS_TYPE_NOKIA_SITE:
+	case _NUM_GSM_BTS_TYPE:
 		break;
 	}
 
@@ -395,10 +405,15 @@ struct gsm_bts *gsm_bts_alloc_register(struct gsm_network *net, enum gsm_bts_typ
 	bts->si_common.rach_control.tx_integer = 9;  /* 12 slots spread - 217/115 slots delay */
 	bts->si_common.rach_control.max_trans = 3; /* 7 retransmissions */
 	bts->si_common.rach_control.t2 = 4; /* no emergency calls */
+	bts->si_common.chan_desc.att = 1; /* attachment required */
+	bts->si_common.chan_desc.bs_pa_mfrms = RSL_BS_PA_MFRMS_5; /* paging frames */
+	bts->si_common.chan_desc.bs_ag_blks_res = 1; /* reserved AGCH blocks */
 
 	llist_add_tail(&bts->list, &net->bts_list);
 
 	INIT_LLIST_HEAD(&bts->abis_queue);
+
+	INIT_LLIST_HEAD(&bts->loc_list);
 
 	return bts;
 }
